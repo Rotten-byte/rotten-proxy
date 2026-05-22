@@ -1,84 +1,89 @@
 const { WebcastPushConnection } = require('tiktok-live-connector');
 const io = require('socket.io')(process.env.PORT || 3000, {
-    cors: { origin: "*", methods: ["GET", "POST"] }
+    cors: {
+        origin: "*",
+        methods: ["GET", "POST"]
+    }
 });
 
 console.log("========================================");
-console.log("🚀 ROTTEN STREAM PROXY V16.0 ACTIVO");
-console.log("🚀 LIKES, REPOSTS Y REGALOS SINCRONIZADOS");
+console.log("🚀 ROTTEN STREAM PROXY V17.0 ACTIVO");
+console.log("📡 TRANSMITIENDO METADATA COMPLETA");
 console.log("========================================");
 
 io.on('connection', (socket) => {
     let tiktok = null;
 
     socket.on('join', (username) => {
-        console.log(`🔗 Conectando a @${username}...`);
-        tiktok = new WebcastPushConnection(username);
+        if (!username) return;
+        
+        console.log(`🔗 Intentando conectar a @${username}...`);
+        
+        // Limpieza de conexión previa si existe
+        if (tiktok) {
+            tiktok.disconnect();
+        }
+
+        tiktok = new WebcastPushConnection(username, {
+            processInitialData: false,
+            enableExtendedGiftInfo: true,
+            enableWebsocketUpgrade: true
+        });
 
         tiktok.connect().then(state => {
-            console.log(`✅ Conectado al Live de @${username}`);
+            console.log(`✅ Conectado al Live de @${username} (ID: ${state.roomId})`);
             socket.emit('status', 'Conectado ✅');
         }).catch(err => {
             console.error("❌ Error al conectar:", err);
             socket.emit('status', 'Error de conexión');
         });
 
-        // 💬 COMENTARIOS
+        // ==========================================================
+        // 💬 EVENTOS (Enviando 'data' completo para el Bot de Android)
+        // ==========================================================
+
+        // Comentarios
         tiktok.on('chat', (data) => {
-            socket.emit('comment', {
-                uniqueId: data.uniqueId,
-                nickname: data.nickname,
-                text: data.comment
-            });
+            // Enviamos el objeto completo para que el bot vea las medallas
+            socket.emit('comment', data);
         });
 
-        // 🎁 REGALOS (Sincronizado con contador)
+        // Regalos
         tiktok.on('gift', (data) => {
-            socket.emit('gift', {
-                uniqueId: data.uniqueId,
-                nickname: data.nickname,
-                giftName: data.giftName,
-                repeatCount: data.repeatCount || 1 // ✅ Importante para regalos seguidos
-            });
+            socket.emit('gift', data);
         });
 
-        // ❤️ LIKES (¡NUEVO! Sincronizado para el bot)
+        // Likes
         tiktok.on('like', (data) => {
-            socket.emit('like', {
-                uniqueId: data.uniqueId,
-                nickname: data.nickname,
-                totalLikeCount: data.totalLikeCount // ✅ Esto activa los agradecimientos cada 3000
-            });
+            socket.emit('like', data);
         });
 
-        // 👤 SEGUIDORES
+        // Seguidores
         tiktok.on('follow', (data) => {
-            socket.emit('follow', {
-                uniqueId: data.uniqueId,
-                nickname: data.nickname
-            });
+            socket.emit('follow', data);
         });
 
-        // 📢 COMPARTIR
+        // Compartir
         tiktok.on('share', (data) => {
-            socket.emit('share', {
-                uniqueId: data.uniqueId,
-                nickname: data.nickname
-            });
+            socket.emit('share', data);
         });
 
-        // 🔁 REPOST (¡NUEVO!)
+        // Eventos sociales (Repost, etc)
         tiktok.on('social', (data) => {
-            if (data.displayType && data.displayType.includes('repost')) {
-                socket.emit('repost', {
-                    uniqueId: data.uniqueId,
-                    nickname: data.nickname
-                });
-            }
+            socket.emit('social', data);
         });
+
+        // ==========================================================
+        // ESTADO DE LA CONEXIÓN
+        // ==========================================================
 
         tiktok.on('disconnected', () => {
-            console.log("⚠️ Live finalizado por el usuario.");
+            console.log(`⚠️ Live de @${username} finalizado.`);
+            socket.emit('status', 'Live finalizado');
+        });
+
+        tiktok.on('streamEnd', () => {
+            console.log(`⚠️ Stream finalizado por el sistema.`);
             socket.emit('status', 'Live finalizado');
         });
 
@@ -95,3 +100,8 @@ io.on('connection', (socket) => {
         }
     });
 });
+
+// Mensaje de consola para evitar que Render piense que el proceso murió
+setInterval(() => {
+    console.log(`[${new Date().toLocaleTimeString()}] Proxy funcionando...`);
+}, 60000);
