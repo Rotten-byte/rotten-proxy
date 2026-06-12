@@ -1,8 +1,17 @@
-const { WebcastPushConnection } = require('tiktok-live-connector');const io = require('socket.io')(process.env.PORT || 3000, {
+const { WebcastPushConnection } = require('tiktok-live-connector');
+const io = require('socket.io')(process.env.PORT || 3000, {
     cors: { origin: "*", methods: ["GET", "POST"] }
 });
 
-console.log("🚀 ROTTEN PROXY V18.0 - MODO ANTIBAN ACTIVO");
+console.log("🚀 ROTTEN PROXY V19.0 - MODO ANTIBAN PRO ACTIVO");
+
+// Lista de User-Agents modernos para evitar bloqueos
+const userAgents = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0'
+];
 
 io.on('connection', (socket) => {
     let tiktok = null;
@@ -11,36 +20,48 @@ io.on('connection', (socket) => {
         if (!username) return;
         
         const cleanUser = username.replace('@', '').trim();
-        console.log(`🔗 Intentando conectar a @${cleanUser}...`);
+        console.log(`🔗 [${new Date().toLocaleTimeString()}] Intentando conectar a @${cleanUser}...`);
         
-        if (tiktok) tiktok.disconnect();
+        // Limpiamos conexión previa si existe
+        if (tiktok) {
+            tiktok.disconnect();
+            tiktok = null;
+        }
 
-        // CONFIGURACIÓN MEJORADA
+        // Seleccionamos un User-Agent al azar para cada conexión
+        const randomUA = userAgents[Math.floor(Math.random() * userAgents.length)];
+
+        // CONFIGURACIÓN ANTIBAN CORREGIDA (Sin aid conflictivo)
         tiktok = new WebcastPushConnection(cleanUser, {
             processInitialData: false,
             enableExtendedGiftInfo: true,
             enableWebsocketUpgrade: true,
-            requestPollingIntervalMs: 2000,
-            // Si consigues un sessionId, ponlo aquí para evitar el 100% de los bloqueos:
-            // sessionId: "tu_session_id_aqui" 
+            requestPollingIntervalMs: 2500, // Intervalo más humano para evitar bans
             clientParams: {
                 "app_language": "es-ES",
-                "device_platform": "web"
+                "device_platform": "web",
+                "browser_name": "Mozilla",
+                "browser_platform": "Win32"
+            },
+            requestOptions: {
+                headers: {
+                    'User-Agent': randomUA
+                }
             }
         });
 
         tiktok.connect().then(state => {
-            console.log(`✅ ¡ÉXITO! Conectado a @${cleanUser}`);
-            // NOTIFICAMOS A LA APP (Vital para la nueva lógica)
+            console.log(`✅ ¡ÉXITO! Conectado a @${cleanUser} (RoomId: ${state.roomId})`);
+            // Vital para que la App Android sepa que ya puede hablar
             socket.emit('connected', { roomId: state.roomId });
             socket.emit('status', 'LIVE');
         }).catch(err => {
-            console.error("❌ Error de TikTok:", err.message);
-            // ENVIAMOS EL ERROR REAL (Para que la App sepa si debe rotar de Proxy)
+            console.error(`❌ Error en @${cleanUser}:`, err.message);
+            // Enviamos el error a la App para que dispare la rotación de Proxy
             socket.emit('error', err.message);
         });
 
-        // Eventos de TikTok
+        // Reenvío de eventos a la App Android
         tiktok.on('chat', (data) => socket.emit('comment', data));
         tiktok.on('gift', (data) => socket.emit('gift', data));
         tiktok.on('like', (data) => socket.emit('like', data));
@@ -49,18 +70,25 @@ io.on('connection', (socket) => {
         tiktok.on('social', (data) => socket.emit('social', data));
 
         tiktok.on('disconnected', () => {
-            console.log(`🔌 @${cleanUser} se ha desconectado.`);
+            console.log(`🔌 @${cleanUser} se ha desconectado del proxy.`);
             socket.emit('disconnected', 'Stream finalizado');
         });
 
-        tiktok.on('streamEnd', () => socket.emit('streamEnd'));
+        tiktok.on('streamEnd', () => {
+            console.log(`🎬 El stream de @${cleanUser} terminó.`);
+            socket.emit('streamEnd');
+        });
     });
 
     socket.on('disconnect', () => {
-        if (tiktok) tiktok.disconnect();
+        if (tiktok) {
+            tiktok.disconnect();
+            tiktok = null;
+        }
     });
 });
 
 setInterval(() => {
-    console.log(`[${new Date().toLocaleTimeString()}] Proxy Online | Esperando conexiones...`);
+    const mem = Math.round(process.memoryUsage().heapUsed / 1024 / 1024);
+    console.log(`[${new Date().toLocaleTimeString()}] Proxy Online | Memoria: ${mem}MB`);
 }, 60000);
