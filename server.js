@@ -1,5 +1,4 @@
-const TikTokLiveConnector = require('tiktok-live-connector');
-
+const { WebcastPushConnection } = require('tiktok-live-connector/dist/lib/index');
 const WebcastPushConnection =
     TikTokLiveConnector.WebcastPushConnection ||
     TikTokLiveConnector.default?.WebcastPushConnection ||
