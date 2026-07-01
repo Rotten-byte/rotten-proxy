@@ -1,4 +1,5 @@
-const { WebcastPushConnection } = require('tiktok-live-connector');
+const tiktok = require('tiktok-live-connector');
+const WebcastPushConnection = tiktok.WebcastPushConnection;
 const io = require('socket.io')(process.env.PORT || 3000, {
     cors: { origin: "*", methods: ["GET", "POST"] }
 });
