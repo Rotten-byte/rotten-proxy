@@ -1,94 +1,74 @@
+const express = require('express');
+const http = require('http');
+const { Server } = require('socket.io');
+
+// --- EL FIX ESTÁ AQUÍ ---
+// En la versión 1.2.2, se importa así:
 const { WebcastPushConnection } = require('tiktok-live-connector');
-const io = require('socket.io')(process.env.PORT || 3000, {
+
+const app = express();
+const server = http.createServer(app);
+const io = new Server(server, {
     cors: { origin: "*", methods: ["GET", "POST"] }
 });
 
-console.log("🚀 ROTTEN PROXY V19.0 - MODO ANTIBAN PRO ACTIVO");
+const PORT = process.env.PORT || 3000;
 
-// Lista de User-Agents modernos para evitar bloqueos
-const userAgents = [
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0'
-];
+app.get('/', (req, res) => res.send('🚀 Proxy TikTok Online'));
 
 io.on('connection', (socket) => {
-    let tiktok = null;
+    let tiktokConnection = null;
 
     socket.on('join', (username) => {
         if (!username) return;
-        
-        const cleanUser = username.replace('@', '').trim();
-        console.log(`🔗 [${new Date().toLocaleTimeString()}] Intentando conectar a @${cleanUser}...`);
-        
-        // Limpiamos conexión previa si existe
-        if (tiktok) {
-            tiktok.disconnect();
-            tiktok = null;
+        const cleanUser = username.replace('@', '').trim().toLowerCase();
+
+        if (tiktokConnection) {
+            try { tiktokConnection.disconnect(); } catch(e) {}
         }
 
-        // Seleccionamos un User-Agent al azar para cada conexión
-        const randomUA = userAgents[Math.floor(Math.random() * userAgents.length)];
+        console.log(`🔗 Conectando a @${cleanUser}...`);
 
-        // CONFIGURACIÓN ANTIBAN CORREGIDA (Sin aid conflictivo)
-        tiktok = new WebcastPushConnection(cleanUser, {
-            processInitialData: false,
-            enableExtendedGiftInfo: true,
-            enableWebsocketUpgrade: true,
-            requestPollingIntervalMs: 2500, // Intervalo más humano para evitar bans
-            clientParams: {
-                "app_language": "es-ES",
-                "device_platform": "web",
-                "browser_name": "Mozilla",
-                "browser_platform": "Win32"
-            },
-            requestOptions: {
-                headers: {
-                    'User-Agent': randomUA
+        try {
+            // Ahora esto funcionará porque WebcastPushConnection ya es la clase correcta
+            tiktokConnection = new WebcastPushConnection(cleanUser, {
+                processInitialData: true,
+                enableExtendedGiftInfo: true,
+                requestPollingIntervalMs: 2000
+            });
+
+            tiktokConnection.connect().then(state => {
+                console.log(`✅ Conectado: ${cleanUser}`);
+                // Avisamos a la app que REALMENTE estamos en el live
+                socket.emit('connected', { roomId: state.roomId, status: "success" });
+            }).catch(err => {
+                console.error(`❌ Error TikTok: ${err.message}`);
+                socket.emit('error', `TikTok: ${err.message}`);
+            });
+
+            // Eventos
+            tiktokConnection.on('chat', (data) => socket.emit('comment', data));
+            tiktokConnection.on('gift', (data) => socket.emit('gift', data));
+            tiktokConnection.on('follow', (data) => socket.emit('follow', data));
+            tiktokConnection.on('share', (data) => socket.emit('share', data));
+            tiktokConnection.on('like', (data) => socket.emit('like', data));
+            tiktokConnection.on('social', (data) => {
+                if (data.displayType && data.displayType.includes('repost')) {
+                    socket.emit('repost', data);
                 }
-            }
-        });
+            });
 
-        tiktok.connect().then(state => {
-            console.log(`✅ ¡ÉXITO! Conectado a @${cleanUser} (RoomId: ${state.roomId})`);
-            // Vital para que la App Android sepa que ya puede hablar
-            socket.emit('connected', { roomId: state.roomId });
-            socket.emit('status', 'LIVE');
-        }).catch(err => {
-            console.error(`❌ Error en @${cleanUser}:`, err.message);
-            // Enviamos el error a la App para que dispare la rotación de Proxy
-            socket.emit('error', err.message);
-        });
-
-        // Reenvío de eventos a la App Android
-        tiktok.on('chat', (data) => socket.emit('comment', data));
-        tiktok.on('gift', (data) => socket.emit('gift', data));
-        tiktok.on('like', (data) => socket.emit('like', data));
-        tiktok.on('follow', (data) => socket.emit('follow', data));
-        tiktok.on('share', (data) => socket.emit('share', data));
-        tiktok.on('social', (data) => socket.emit('social', data));
-
-        tiktok.on('disconnected', () => {
-            console.log(`🔌 @${cleanUser} se ha desconectado del proxy.`);
-            socket.emit('disconnected', 'Stream finalizado');
-        });
-
-        tiktok.on('streamEnd', () => {
-            console.log(`🎬 El stream de @${cleanUser} terminó.`);
-            socket.emit('streamEnd');
-        });
+        } catch (e) {
+            console.error("🔥 Error crítico:", e.message);
+            socket.emit('error', `Constructor Error: ${e.message}`);
+        }
     });
 
     socket.on('disconnect', () => {
-        if (tiktok) {
-            tiktok.disconnect();
-            tiktok = null;
-        }
+        if (tiktokConnection) tiktokConnection.disconnect();
     });
 });
 
-setInterval(() => {
-    const mem = Math.round(process.memoryUsage().heapUsed / 1024 / 1024);
-    console.log(`[${new Date().toLocaleTimeString()}] Proxy Online | Memoria: ${mem}MB`);
-}, 60000);
+server.listen(PORT, () => {
+    console.log(`🚀 Proxy V20.1 corriendo en puerto ${PORT}`);
+});
