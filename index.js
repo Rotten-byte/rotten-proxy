@@ -2,15 +2,14 @@ const { WebcastPushConnection } = require('tiktok-live-connector');
 const http = require('http');
 const { Server } = require('socket.io');
 
-// ESTO EVITA EL "FAILED SERVICE": Crea un servidor que responde a Render
+// 1. SERVIDOR HTTP PARA RENDER
 const server = http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end('ROTTEN PROXY ONLINE');
+    res.end('ROTTEN_OK'); // Render lee esto y se pone en verde
 });
 
-const io = new Server(server, {
-    cors: { origin: "*" }
-});
+// 2. CONFIGURACIÓN DE SOCKETS
+const io = new Server(server, { cors: { origin: "*" } });
 
 io.on('connection', (socket) => {
     let tiktok = null;
@@ -25,30 +24,29 @@ io.on('connection', (socket) => {
         tiktok = new WebcastPushConnection(user, {
             processInitialData: true,
             enableExtendedGiftInfo: true,
-            sessionId: sid || undefined, // Evita errores 404
+            sessionId: sid || undefined,
             requestPollingIntervalMs: 2000
         });
 
-        tiktok.connect()
-            .then(s => {
-                socket.emit('connected', { roomId: s.roomId });
-                socket.emit('log', `Conectado a @${user}`);
-            })
-            .catch(e => socket.emit('error', e.message));
+        tiktok.connect().then(s => {
+            socket.emit('connected', { roomId: s.roomId });
+            console.log(`Conectado a ${user}`);
+        }).catch(e => {
+            socket.emit('error', e.message);
+            console.log(`Error: ${e.message}`);
+        });
 
-        // Eventos
+        // Reenvío de eventos a la App
         tiktok.on('chat', (d) => socket.emit('comment', d));
         tiktok.on('gift', (d) => socket.emit('gift', d));
         tiktok.on('like', (d) => socket.emit('like', d));
-        tiktok.on('follow', (d) => socket.emit('follow', d));
-        tiktok.on('share', (d) => socket.emit('share', d));
     });
 
     socket.on('disconnect', () => { if (tiktok) tiktok.disconnect(); });
 });
 
-// USAR EL PUERTO DE RENDER
+// 3. ARRANCAR EN EL PUERTO DE RENDER
 const PORT = process.env.PORT || 10000;
 server.listen(PORT, '0.0.0.0', () => {
-    console.log(`Servidor en puerto ${PORT}`);
+    console.log(`Escuchando en puerto ${PORT}`);
 });
