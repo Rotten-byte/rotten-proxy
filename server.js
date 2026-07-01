@@ -1,7 +1,4 @@
-const TikTokConnector = require('tiktok-live-connector');
-// FIX: Detecta automáticamente si debe usar { WebcastPushConnection } o la clase directa
-const WebcastPushConnection = TikTokConnector.WebcastPushConnection || TikTokConnector;
-
+const { WebcastPushConnection } = require('tiktok-live-connector');
 const io = require('socket.io')(process.env.PORT || 3000, {
     cors: { origin: "*", methods: ["GET", "POST"] }
 });
@@ -34,7 +31,7 @@ io.on('connection', (socket) => {
         // Seleccionamos un User-Agent al azar para cada conexión
         const randomUA = userAgents[Math.floor(Math.random() * userAgents.length)];
 
-        // CONFIGURACIÓN ANTIBAN PRO
+        // CONFIGURACIÓN ANTIBAN CORREGIDA (Sin aid conflictivo)
         tiktok = new WebcastPushConnection(cleanUser, {
             processInitialData: false,
             enableExtendedGiftInfo: true,
@@ -55,10 +52,12 @@ io.on('connection', (socket) => {
 
         tiktok.connect().then(state => {
             console.log(`✅ ¡ÉXITO! Conectado a @${cleanUser} (RoomId: ${state.roomId})`);
+            // Vital para que la App Android sepa que ya puede hablar
             socket.emit('connected', { roomId: state.roomId });
             socket.emit('status', 'LIVE');
         }).catch(err => {
             console.error(`❌ Error en @${cleanUser}:`, err.message);
+            // Enviamos el error a la App para que dispare la rotación de Proxy
             socket.emit('error', err.message);
         });
 
@@ -68,14 +67,7 @@ io.on('connection', (socket) => {
         tiktok.on('like', (data) => socket.emit('like', data));
         tiktok.on('follow', (data) => socket.emit('follow', data));
         tiktok.on('share', (data) => socket.emit('share', data));
-        
-        // DETECCIÓN DE REPOST (NUEVO)
-        tiktok.on('social', (data) => {
-            if (data.displayType && data.displayType.includes('repost')) {
-                socket.emit('repost', data);
-            }
-            socket.emit('social', data);
-        });
+        tiktok.on('social', (data) => socket.emit('social', data));
 
         tiktok.on('disconnected', () => {
             console.log(`🔌 @${cleanUser} se ha desconectado del proxy.`);
@@ -96,7 +88,6 @@ io.on('connection', (socket) => {
     });
 });
 
-// Monitor de memoria para evitar que Render mate el proceso
 setInterval(() => {
     const mem = Math.round(process.memoryUsage().heapUsed / 1024 / 1024);
     console.log(`[${new Date().toLocaleTimeString()}] Proxy Online | Memoria: ${mem}MB`);
