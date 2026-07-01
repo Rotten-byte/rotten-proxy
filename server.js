@@ -1,92 +1,74 @@
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
+const cors = require('cors');
+const TIKTOK_LIB = require('tiktok-live-connector');
 
-// --- EL FIX CRÍTICO ESTÁ AQUÍ ---
-// En la versión 1.2.2+, el constructor debe extraerse así:
-const { WebcastPushConnection } = require('tiktok-live-connector');
+// Constructor Multi-Versión
+const WebcastPushConnection = TIKTOK_LIB.WebcastPushConnection || TIKTOK_LIB;
 
 const app = express();
+app.use(cors());
 const server = http.createServer(app);
-const io = new Server(server, {
-    cors: { origin: "*", methods: ["GET", "POST"] }
-});
+const io = new Server(server, { cors: { origin: "*" } });
 
-const PORT = process.env.PORT || 3000;
-
-console.log("🚀 ROTTEN PROXY V20.2 - MODO ANTIBAN PRO ACTIVO");
-
-// Endpoint de salud para Render
-app.get('/', (req, res) => res.send('🚀 Proxy TikTok Online'));
+app.get('/', (req, res) => res.send('🛡️ ROTTEN PROXY V21 - ONLINE'));
 
 io.on('connection', (socket) => {
     let tiktok = null;
+    let heartbeat = null;
 
     socket.on('join', (username) => {
         if (!username) return;
+        const user = username.replace('@', '').trim().toLowerCase();
         
-        const cleanUser = username.replace('@', '').trim().toLowerCase();
-        console.log(`🔗 [${new Date().toLocaleTimeString()}] Intentando conectar a @${cleanUser}...`);
-        
-        // Limpiar conexión previa
-        if (tiktok) {
-            try { tiktok.disconnect(); } catch(e) {}
-            tiktok = null;
-        }
+        if (tiktok) tiktok.disconnect();
+        clearInterval(heartbeat);
+
+        console.log(`🔗 [${new Date().toLocaleTimeString()}] Conectando a @${user}`);
 
         try {
-            // Instancia el conector (Ahora NO dará error de constructor)
-            tiktok = new WebcastPushConnection(cleanUser, {
+            tiktok = new WebcastPushConnection(user, {
                 processInitialData: true,
                 enableExtendedGiftInfo: true,
-                requestPollingIntervalMs: 2000
+                requestPollingIntervalMs: 2000,
+                clientParams: { "app_language": "en-US", "device_platform": "web" }
             });
 
             tiktok.connect().then(state => {
-                console.log(`✅ ¡ÉXITO! Conectado a @${cleanUser}`);
-                // Avisamos a la App Android que la conexión es real
-                socket.emit('connected', { roomId: state.roomId, status: "success" });
+                socket.emit('connected', { status: "success", roomId: state.roomId });
+                console.log(`✅ @${user} - Conectado`);
+                
+                // Heartbeat para mantener la conexión Socket.io viva
+                heartbeat = setInterval(() => {
+                    socket.emit('proxy_heartbeat', { uptime: process.uptime() });
+                }, 10000);
+
             }).catch(err => {
-                console.error(`❌ Error en @${cleanUser}:`, err.message);
                 socket.emit('error', `TikTok: ${err.message}`);
+                console.error(`❌ Error TikTok: ${err.message}`);
             });
 
-            // Reenvío de eventos a la App
-            tiktok.on('chat', (data) => socket.emit('comment', data));
-            tiktok.on('gift', (data) => socket.emit('gift', data));
-            tiktok.on('follow', (data) => socket.emit('follow', data));
-            tiktok.on('share', (data) => socket.emit('share', data));
-            tiktok.on('like', (data) => socket.emit('like', data));
-            
-            tiktok.on('social', (data) => {
-                socket.emit('social', data);
-                if (data.displayType && data.displayType.includes('repost')) {
-                    socket.emit('repost', data);
-                }
-            });
-
-            tiktok.on('error', (err) => {
-                console.error("⚠️ Stream Error:", err.message);
-                socket.emit('error', `Stream Error: ${err.message}`);
+            // Reenvío de eventos
+            tiktok.on('chat', (d) => socket.emit('comment', d));
+            tiktok.on('gift', (d) => socket.emit('gift', d));
+            tiktok.on('follow', (d) => socket.emit('follow', d));
+            tiktok.on('share', (d) => socket.emit('share', d));
+            tiktok.on('like', (d) => socket.emit('like', d));
+            tiktok.on('social', (d) => {
+                socket.emit('social', d);
+                if (d.displayType?.includes('repost')) socket.emit('repost', d);
             });
 
         } catch (e) {
-            console.error("🔥 Error fatal:", e.message);
-            socket.emit('error', `Proxy-Error: ${e.message}`);
+            socket.emit('error', `Constructor Error: ${e.message}`);
         }
     });
 
     socket.on('disconnect', () => {
         if (tiktok) tiktok.disconnect();
+        clearInterval(heartbeat);
     });
 });
 
-// Logs de monitoreo cada minuto (Como el original)
-setInterval(() => {
-    const mem = Math.round(process.memoryUsage().heapUsed / 1024 / 1024);
-    console.log(`[${new Date().toLocaleTimeString()}] Proxy Online | Memoria: ${mem}MB`);
-}, 60000);
-
-server.listen(PORT, () => {
-    console.log(`🚀 Servidor escuchando en puerto ${PORT}`);
-});
+server.listen(process.env.PORT || 3000, () => console.log('🚀 Proxy V21 Ready'));
