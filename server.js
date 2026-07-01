@@ -1,16 +1,15 @@
 const express = require('express');
+const { WebcastPushConnection } = require('tiktok-live-connector'); // Importación estándar v1.x
 const http = require('http');
 const { Server } = require('socket.io');
-const TIKTOK_LIB = require('tiktok-live-connector');
 
-const WebcastPushConnection = TIKTOK_LIB.WebcastPushConnection || TIKTOK_LIB;
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: "*" } });
 
 const PORT = process.env.PORT || 3000;
 
-app.get('/', (req, res) => res.send('🚀 PROXY V19.5 - BYPASS ACTIVE'));
+app.get('/', (req, res) => res.send('🚀 PROXY V19.6 - READY'));
 
 io.on('connection', (socket) => {
     let tiktok = null;
@@ -18,42 +17,27 @@ io.on('connection', (socket) => {
     socket.on('join', (username) => {
         if (!username) return;
         const user = username.replace('@', '').trim().toLowerCase();
-        if (tiktok) tiktok.disconnect();
+        
+        if (tiktok) {
+            tiktok.disconnect();
+            tiktok = null;
+        }
 
-        console.log(`📡 Intentando bypass para @${user}...`);
+        console.log(`🔗 Conectando a: ${user}`);
 
         try {
-            tiktok = new WebcastPushConnection(user, {
-                processInitialData: true,
-                enableExtendedGiftInfo: true,
-                requestPollingIntervalMs: 2000,
-                // --- CONFIGURACIÓN DE BYPASS ---
-                clientParams: {
-                    "app_language": "en-US",
-                    "device_platform": "web",
-                    "browser_name": "Mozilla",
-                    "browser_version": "5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
-                },
-                requestOptions: {
-                    timeout: 10000,
-                    headers: {
-                        'Referer': 'https://www.tiktok.com/',
-                        'Origin': 'https://www.tiktok.com/',
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36'
-                    }
-                }
-            });
+            // Usamos el constructor estándar sin parámetros extra que causan el 404
+            tiktok = new WebcastPushConnection(user);
 
             tiktok.connect().then(state => {
-                console.log(`✅ CONECTADO: ${user}`);
+                console.log(`✅ Conectado a ${state.roomId}`);
                 socket.emit('connected', { status: "success", roomId: state.roomId });
             }).catch(err => {
-                console.error(`❌ Fallo de Firma: ${err.message}`);
-                // Enviamos error amigable para activar la rotación en Android
+                console.error("❌ Error de TikTok:", err.message);
                 socket.emit('error', `TikTok: ${err.message}`);
             });
 
-            // Eventos
+            // Eventos mínimos necesarios
             tiktok.on('chat', (d) => socket.emit('comment', d));
             tiktok.on('gift', (d) => socket.emit('gift', d));
             tiktok.on('social', (d) => {
@@ -61,11 +45,14 @@ io.on('connection', (socket) => {
             });
 
         } catch (e) {
-            socket.emit('error', "Proxy Error");
+            console.error("🔥 Error Constructor:", e.message);
+            socket.emit('error', `Constructor Error: ${e.message}`);
         }
     });
 
-    socket.on('disconnect', () => { if (tiktok) tiktok.disconnect(); });
+    socket.on('disconnect', () => {
+        if (tiktok) tiktok.disconnect();
+    });
 });
 
-server.listen(PORT, () => console.log(`Proxy V19.5 listo`));
+server.listen(PORT, () => console.log(`Proxy V19.6 activo en puerto ${PORT}`));
