@@ -1,5 +1,5 @@
 const tiktokLib = require('tiktok-live-connector');
-const WebcastPushConnection = tiktokLib.WebcastPushConnection;
+const TikTokLiveConnection = tiktokLib.TikTokLiveConnection;
 const http = require('http');
 
 const PORT = process.env.PORT || 3000;
@@ -104,20 +104,19 @@ io.on('connection', (socket) => {
 
         console.log(`🔗 [${new Date().toLocaleTimeString()}] Intentando conectar a @${cleanUser}...`);
 
-        const conn = new WebcastPushConnection(cleanUser, {
+        const conn = new TikTokLiveConnection(cleanUser, {
             signApiKey: process.env.EULER_API_KEY, // sacala gratis en eulerstream.com
             processInitialData: false,
             enableExtendedGiftInfo: true,
-            enableWebsocketUpgrade: true,
             requestPollingIntervalMs: 2500,
-            clientParams: {
+            webClientParams: {
                 "app_language": "es-ES",
                 "device_platform": "web",
                 "browser_name": "Mozilla",
                 "browser_platform": "Win32"
             },
-            requestOptions: {
-                headers: { 'User-Agent': randomUA() }
+            webClientHeaders: {
+                'User-Agent': randomUA()
             }
         });
         state.conn = conn;
