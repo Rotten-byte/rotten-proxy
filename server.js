@@ -1,30 +1,13 @@
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
-
-// --- DETECCIÓN UNIVERSAL DEL CONSTRUCTOR ---
-const TIKTOK_LIB = require('tiktok-live-connector');
-let WebcastPushConnection;
-
-try {
-    if (typeof TIKTOK_LIB.WebcastPushConnection === 'function') {
-        WebcastPushConnection = TIKTOK_LIB.WebcastPushConnection;
-    } else if (typeof TIKTOK_LIB === 'function') {
-        WebcastPushConnection = TIKTOK_LIB;
-    } else if (TIKTOK_LIB.default && typeof TIKTOK_LIB.default.WebcastPushConnection === 'function') {
-        WebcastPushConnection = TIKTOK_LIB.default.WebcastPushConnection;
-    } else {
-        WebcastPushConnection = TIKTOK_LIB.WebcastPushConnection || TIKTOK_LIB;
-    }
-} catch (e) {
-    console.error("Error identificando el constructor:", e);
-}
+const { WebcastPushConnection } = require('tiktok-live-connector'); // Importación limpia v1.x
 
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: "*" } });
 
-app.get('/', (req, res) => res.send('🚀 PROXY V19.9 - UNIVERSAL FIX ACTIVE'));
+app.get('/', (req, res) => res.send('🚀 PROXY V20.0 - BYPASS ACTIVE'));
 
 io.on('connection', (socket) => {
     let tiktok = null;
@@ -32,50 +15,47 @@ io.on('connection', (socket) => {
     socket.on('join', (username) => {
         if (!username) return;
         const user = username.replace('@', '').trim().toLowerCase();
-        if (tiktok) { try { tiktok.disconnect(); } catch(e){} }
+        
+        if (tiktok) {
+            tiktok.disconnect();
+            tiktok = null;
+        }
 
-        console.log(`🔗 Intentando conectar a: ${user}`);
+        console.log(`🔗 Shadow Connection: ${user}`);
 
         try {
-            // Verificación final antes de instanciar
-            if (typeof WebcastPushConnection !== 'function') {
-                throw new Error("Constructor no encontrado");
-            }
-
-            tiktok = new WebcastPushConnection(user, {
-                processInitialData: true,
-                enableExtendedGiftInfo: true,
-                requestPollingIntervalMs: 2000,
-                clientParams: {
-                    "app_language": "en-US",
-                    "device_platform": "web"
-                }
-            });
+            // CONFIGURACIÓN MÍNIMA ABSOLUTA
+            // No enviamos clientParams ni headers manuales para evitar conflicto de firmas
+            tiktok = new WebcastPushConnection(user);
 
             tiktok.connect().then(state => {
-                console.log(`✅ LIVE: ${user} (ID: ${state.roomId})`);
+                console.log(`✅ CONECTADO: ${state.roomId}`);
                 socket.emit('connected', { status: "success", roomId: state.roomId });
             }).catch(err => {
-                console.error("❌ Error TikTok:", err.message);
+                console.error("❌ Error Firma:", err.message);
+                // Si da 404, enviamos el error exacto para que la App rote
                 socket.emit('error', `TikTok: ${err.message}`);
             });
 
-            // Eventos
+            // Reenvío de eventos
             tiktok.on('chat', (d) => socket.emit('comment', d));
             tiktok.on('gift', (d) => socket.emit('gift', d));
             tiktok.on('social', (d) => {
-                if (d.displayType && d.displayType.includes('repost')) socket.emit('repost', d);
+                if (d.displayType && d.displayType.includes('repost')) {
+                    socket.emit('repost', d);
+                }
             });
 
         } catch (e) {
-            console.error("🔥 Error crítico:", e.message);
-            socket.emit('error', `Proxy-Error: ${e.message}`);
+            console.error("🔥 Crash:", e.message);
+            socket.emit('error', `Internal Error: ${e.message}`);
         }
     });
 
-    socket.on('disconnect', () => { if (tiktok) tiktok.disconnect(); });
+    socket.on('disconnect', () => {
+        if (tiktok) tiktok.disconnect();
+    });
 });
 
-server.listen(process.env.PORT || 3000, () => {
-    console.log(`🚀 V19.9 - Constructor: ${typeof WebcastPushConnection}`);
-});
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => console.log(`🚀 Proxy V20.0 - Puerto ${PORT}`));
