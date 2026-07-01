@@ -1,6 +1,16 @@
 const tiktokLib = require('tiktok-live-connector');
 const TikTokLiveConnection = tiktokLib.TikTokLiveConnection;
+const SignConfig = tiktokLib.SignConfig;
 const http = require('http');
+
+// --- Signing: usamos TikTool en vez del Euler Stream por defecto ---
+// TikTool (tik.tools) es un proveedor alternativo de firmado con tier gratis.
+// Si en algún momento preferís volver a Euler, borrá estas 2 líneas
+// y dejá el signApiKey de Euler en la config de cada conexión (más abajo).
+if (process.env.TIKTOOL_API_KEY) {
+    SignConfig.apiKey = process.env.TIKTOOL_API_KEY;
+    SignConfig.basePath = 'https://api.tik.tools';
+}
 
 const PORT = process.env.PORT || 3000;
 
@@ -22,11 +32,17 @@ httpServer.listen(PORT, () => {
 console.log("🚀 ROTTEN PROXY V20.0 - MODO ANTIBAN + AUTO-RECONEXIÓN");
 
 // --- Diagnóstico: confirma si la env var realmente llegó (sin exponer la key completa) ---
-if (process.env.EULER_API_KEY) {
-    const k = process.env.EULER_API_KEY;
-    console.log(`🔑 EULER_API_KEY detectada: ${k.slice(0, 8)}...${k.slice(-4)} (${k.length} caracteres)`);
-} else {
-    console.log("⚠️ EULER_API_KEY NO está definida en este proceso. El signing va a fallar.");
+function logKeyStatus(name, value) {
+    if (value) {
+        console.log(`🔑 ${name} detectada: ${value.slice(0, 8)}...${value.slice(-4)} (${value.length} caracteres)`);
+    } else {
+        console.log(`⚠️ ${name} NO está definida en este proceso.`);
+    }
+}
+logKeyStatus('TIKTOOL_API_KEY', process.env.TIKTOOL_API_KEY);
+logKeyStatus('EULER_API_KEY', process.env.EULER_API_KEY);
+if (!process.env.TIKTOOL_API_KEY && !process.env.EULER_API_KEY) {
+    console.log("⚠️ Ninguna key de signing configurada. El signing va a fallar.");
 }
 
 // --- Config de reconexión (mismo espíritu que RECONNECT_SECONDS del bot Python) ---
