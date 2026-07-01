@@ -21,6 +21,14 @@ httpServer.listen(PORT, () => {
 
 console.log("🚀 ROTTEN PROXY V20.0 - MODO ANTIBAN + AUTO-RECONEXIÓN");
 
+// --- Diagnóstico: confirma si la env var realmente llegó (sin exponer la key completa) ---
+if (process.env.EULER_API_KEY) {
+    const k = process.env.EULER_API_KEY;
+    console.log(`🔑 EULER_API_KEY detectada: ${k.slice(0, 8)}...${k.slice(-4)} (${k.length} caracteres)`);
+} else {
+    console.log("⚠️ EULER_API_KEY NO está definida en este proceso. El signing va a fallar.");
+}
+
 // --- Config de reconexión (mismo espíritu que RECONNECT_SECONDS del bot Python) ---
 const RECONNECT_BASE_MS = 6000;      // primer intento a los 6s (igual que Python)
 const RECONNECT_MAX_MS = 30000;      // techo de backoff para no martillar a TikTok
@@ -97,6 +105,7 @@ io.on('connection', (socket) => {
         console.log(`🔗 [${new Date().toLocaleTimeString()}] Intentando conectar a @${cleanUser}...`);
 
         const conn = new WebcastPushConnection(cleanUser, {
+            signApiKey: process.env.EULER_API_KEY, // sacala gratis en eulerstream.com
             processInitialData: false,
             enableExtendedGiftInfo: true,
             enableWebsocketUpgrade: true,
