@@ -1,42 +1,50 @@
-const { WebcastPushConnection } = require('tiktok-live-connector');
-const io = require('socket.io')(process.env.PORT || 3000, {
+const { WebcastPushConnection } = require('tiktok-live-connector');const io = require('socket.io')(process.env.PORT || 3000, {
     cors: { origin: "*", methods: ["GET", "POST"] }
 });
 
-console.log("🚀 ROTTEN PROXY V19.0 - MODO ANTIBAN PRO ACTIVO");
+console.log("🚀 ROTTEN PROXY V23.0 - MODO SESSIONID Y LOGS UNIFICADOS");
 
-// Lista de User-Agents modernos para evitar bloqueos
+// Lista de User-Agents modernos para mayor resiliencia
 const userAgents = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0'
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 ];
 
 io.on('connection', (socket) => {
     let tiktok = null;
 
-    socket.on('join', (username) => {
-        if (!username) return;
+    // Escuchamos el evento 'join' que ahora recibe un objeto {username, sessionId}
+    socket.on('join', (data) => {
+        // Compatibilidad: si envían solo un string, lo manejamos, si es objeto, extraemos datos
+        const username = typeof data === 'string' ? data : data.username;
+        const sessionId = typeof data === 'object' ? data.sessionId : null;
+
+        if (!username) {
+            socket.emit('error', 'Usuario no proporcionado');
+            return;
+        }
         
         const cleanUser = username.replace('@', '').trim();
-        console.log(`🔗 [${new Date().toLocaleTimeString()}] Intentando conectar a @${cleanUser}...`);
+        const hasSession = sessionId && sessionId.length > 5;
         
-        // Limpiamos conexión previa si existe
+        console.log(`🔗 [${new Date().toLocaleTimeString()}] Intento de conexión: @${cleanUser} ${hasSession ? '(Con SessionID)' : '(Sin sesión)'}`);
+        socket.emit('log', `Buscando live de @${cleanUser}...`);
+
         if (tiktok) {
             tiktok.disconnect();
             tiktok = null;
         }
 
-        // Seleccionamos un User-Agent al azar para cada conexión
         const randomUA = userAgents[Math.floor(Math.random() * userAgents.length)];
 
-        // CONFIGURACIÓN ANTIBAN CORREGIDA (Sin aid conflictivo)
+        // CONFIGURACIÓN AVANZADA: Integración de SessionID y Bypass de Signatures
         tiktok = new WebcastPushConnection(cleanUser, {
-            processInitialData: false,
+            processInitialData: true,
             enableExtendedGiftInfo: true,
             enableWebsocketUpgrade: true,
-            requestPollingIntervalMs: 2500, // Intervalo más humano para evitar bans
+            sessionId: hasSession ? sessionId : undefined, // <--- ELIMINA ERRORES 404 Y CAPTCHAS
+            requestPollingIntervalMs: 2000,
             clientParams: {
                 "app_language": "es-ES",
                 "device_platform": "web",
@@ -51,14 +59,22 @@ io.on('connection', (socket) => {
         });
 
         tiktok.connect().then(state => {
-            console.log(`✅ ¡ÉXITO! Conectado a @${cleanUser} (RoomId: ${state.roomId})`);
-            // Vital para que la App Android sepa que ya puede hablar
+            console.log(`✅ Conectado a @${cleanUser} (Room: ${state.roomId})`);
             socket.emit('connected', { roomId: state.roomId });
-            socket.emit('status', 'LIVE');
+            socket.emit('log', `¡Conectado! ${hasSession ? 'Bypass de sesión activo.' : 'Sin sesión (IP pública).'}`);
         }).catch(err => {
-            console.error(`❌ Error en @${cleanUser}:`, err.message);
-            // Enviamos el error a la App para que dispare la rotación de Proxy
-            socket.emit('error', err.message);
+            let errorMsg = err.message;
+            console.error(`❌ Error en @${cleanUser}:`, errorMsg);
+            
+            // Traducimos errores comunes para que la App Android los entienda
+            if (errorMsg.includes("404")) {
+                errorMsg = "TIKTOK_404: IP Bloqueada o Live no encontrado.";
+            } else if (errorMsg.includes("signature") || errorMsg.includes("sign")) {
+                errorMsg = "SIGNATURE_ERROR: TikTok requiere SessionID para validar.";
+            }
+
+            socket.emit('error', errorMsg);
+            socket.emit('log', `Error: ${errorMsg}`);
         });
 
         // Reenvío de eventos a la App Android
@@ -67,16 +83,18 @@ io.on('connection', (socket) => {
         tiktok.on('like', (data) => socket.emit('like', data));
         tiktok.on('follow', (data) => socket.emit('follow', data));
         tiktok.on('share', (data) => socket.emit('share', data));
-        tiktok.on('social', (data) => socket.emit('social', data));
+        tiktok.on('repost', (data) => socket.emit('repost', data));
 
         tiktok.on('disconnected', () => {
-            console.log(`🔌 @${cleanUser} se ha desconectado del proxy.`);
-            socket.emit('disconnected', 'Stream finalizado');
+            console.log(`🔌 Conexión con @${cleanUser} cerrada.`);
+            socket.emit('log', "Servidor desconectado.");
+            socket.emit('disconnected');
         });
 
         tiktok.on('streamEnd', () => {
-            console.log(`🎬 El stream de @${cleanUser} terminó.`);
-            socket.emit('streamEnd');
+            console.log(`🎬 El live de @${cleanUser} ha terminado.`);
+            socket.emit('log', "El usuario terminó el Live.");
+            socket.emit('error', "404"); // Dispara rotación en la app si el live termina
         });
     });
 
@@ -88,7 +106,8 @@ io.on('connection', (socket) => {
     });
 });
 
+// Monitor de salud del servidor
 setInterval(() => {
     const mem = Math.round(process.memoryUsage().heapUsed / 1024 / 1024);
-    console.log(`[${new Date().toLocaleTimeString()}] Proxy Online | Memoria: ${mem}MB`);
+    console.log(`[STATUS] Memoria: ${mem}MB | Conexiones activas: ${io.engine.clientsCount}`);
 }, 60000);
