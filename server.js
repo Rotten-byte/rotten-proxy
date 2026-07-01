@@ -1,16 +1,5 @@
-const tiktokLib = require('tiktok-live-connector');
-const TikTokLiveConnection = tiktokLib.TikTokLiveConnection;
-const SignConfig = tiktokLib.SignConfig;
+const { TikTokLive } = require('@tiktool/live');
 const http = require('http');
-
-// --- Signing: usamos TikTool en vez del Euler Stream por defecto ---
-// TikTool (tik.tools) es un proveedor alternativo de firmado con tier gratis.
-// Si en algún momento preferís volver a Euler, borrá estas 2 líneas
-// y dejá el signApiKey de Euler en la config de cada conexión (más abajo).
-if (process.env.TIKTOOL_API_KEY) {
-    SignConfig.apiKey = process.env.TIKTOOL_API_KEY;
-    SignConfig.basePath = 'https://api.tik.tools';
-}
 
 const PORT = process.env.PORT || 3000;
 
@@ -29,37 +18,20 @@ httpServer.listen(PORT, () => {
     console.log(`🌐 Servidor escuchando en puerto ${PORT}`);
 });
 
-console.log("🚀 ROTTEN PROXY V20.0 - MODO ANTIBAN + AUTO-RECONEXIÓN");
+console.log("🚀 ROTTEN PROXY V21.0 - TIKTOOL + AUTO-RECONEXIÓN");
 
-// --- Diagnóstico: confirma si la env var realmente llegó (sin exponer la key completa) ---
-function logKeyStatus(name, value) {
-    if (value) {
-        console.log(`🔑 ${name} detectada: ${value.slice(0, 8)}...${value.slice(-4)} (${value.length} caracteres)`);
-    } else {
-        console.log(`⚠️ ${name} NO está definida en este proceso.`);
-    }
-}
-logKeyStatus('TIKTOOL_API_KEY', process.env.TIKTOOL_API_KEY);
-logKeyStatus('EULER_API_KEY', process.env.EULER_API_KEY);
-if (!process.env.TIKTOOL_API_KEY && !process.env.EULER_API_KEY) {
-    console.log("⚠️ Ninguna key de signing configurada. El signing va a fallar.");
+// --- Diagnóstico: confirma si la key de TikTool realmente llegó ---
+if (process.env.TIKTOOL_API_KEY) {
+    const k = process.env.TIKTOOL_API_KEY;
+    console.log(`🔑 TIKTOOL_API_KEY detectada: ${k.slice(0, 8)}...${k.slice(-4)} (${k.length} caracteres)`);
+} else {
+    console.log("⚠️ TIKTOOL_API_KEY NO está definida. Sacá una gratis en https://tik.tools");
 }
 
 // --- Config de reconexión (mismo espíritu que RECONNECT_SECONDS del bot Python) ---
 const RECONNECT_BASE_MS = 6000;      // primer intento a los 6s (igual que Python)
 const RECONNECT_MAX_MS = 30000;      // techo de backoff para no martillar a TikTok
 const RECONNECT_MAX_ATTEMPTS = 0;    // 0 = infinito, igual que el "while self.running" de Python
-
-const userAgents = [
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0'
-];
-
-function randomUA() {
-    return userAgents[Math.floor(Math.random() * userAgents.length)];
-}
 
 function backoffDelay(attempt) {
     // 6s, 12s, 24s, 30s, 30s... (equivalente al sleep(RECONNECT_SECONDS) pero creciente)
@@ -120,58 +92,45 @@ io.on('connection', (socket) => {
 
         console.log(`🔗 [${new Date().toLocaleTimeString()}] Intentando conectar a @${cleanUser}...`);
 
-        const conn = new TikTokLiveConnection(cleanUser, {
-            signApiKey: process.env.EULER_API_KEY, // sacala gratis en eulerstream.com
-            processInitialData: false,
-            enableExtendedGiftInfo: true,
-            requestPollingIntervalMs: 2500,
-            webClientParams: {
-                "app_language": "es-ES",
-                "device_platform": "web",
-                "browser_name": "Mozilla",
-                "browser_platform": "Win32"
-            },
-            webClientHeaders: {
-                'User-Agent': randomUA()
-            }
+        const conn = new TikTokLive({
+            uniqueId: cleanUser,
+            apiKey: process.env.TIKTOOL_API_KEY,
+            mode: 'relayed', // recomendado por TikTool para producción / multi-usuario
         });
         state.conn = conn;
 
-        // Reenvío de eventos a la App Android
+        // Reenvío de eventos a la App Android.
+        // El "user" viene anidado (data.user.uniqueId, data.user.nickname, etc.)
         conn.on('chat', (data) => socket.emit('comment', data));
         conn.on('gift', (data) => socket.emit('gift', data));
         conn.on('like', (data) => socket.emit('like', data));
-        conn.on('follow', (data) => socket.emit('follow', data));
-        conn.on('share', (data) => socket.emit('share', data));
-        conn.on('social', (data) => socket.emit('social', data));
+        conn.on('member', (data) => socket.emit('member', data));
+        conn.on('social', (data) => socket.emit('social', data)); // follow + share vienen acá
 
-        conn.on('disconnected', () => {
-            console.log(`🔌 @${cleanUser} se desconectó del proxy.`);
-            socket.emit('disconnected', 'Stream finalizado');
-            state.conn = null;
-            scheduleReconnect(); // <-- esto es lo que faltaba: reintentar en vez de morir
-        });
-
-        conn.on('streamEnd', () => {
-            console.log(`🎬 El stream de @${cleanUser} terminó.`);
-            socket.emit('streamEnd');
-            // Si el streamer cortó el live, no tiene sentido reintentar cada 6s.
-            // Igual dejamos el intento programado pero con backoff más largo.
-            scheduleReconnect();
+        // Nombres de evento defensivos: no sabemos con certeza cuál dispara el SDK
+        // al cortarse la conexión, así que escuchamos varios candidatos.
+        // Los que no existan simplemente nunca se disparan (no rompen nada).
+        ['disconnected', 'disconnect', 'close', 'streamEnd'].forEach((evt) => {
+            conn.on(evt, () => {
+                console.log(`🔌 @${cleanUser} se desconectó del proxy (evento: ${evt}).`);
+                socket.emit('disconnected', 'Stream finalizado');
+                state.conn = null;
+                scheduleReconnect();
+            });
         });
 
         conn.connect()
-            .then((stateInfo) => {
-                console.log(`✅ ¡ÉXITO! Conectado a @${cleanUser} (RoomId: ${stateInfo.roomId})`);
-                state.attempts = 0; // se resetea el backoff al conectar bien, igual que reconnect_attempt en Python
-                socket.emit('connected', { roomId: stateInfo.roomId });
+            .then(() => {
+                console.log(`✅ ¡ÉXITO! Conectado a @${cleanUser}`);
+                state.attempts = 0; // se resetea el backoff al conectar bien
+                socket.emit('connected', { uniqueId: cleanUser });
                 socket.emit('status', 'LIVE');
             })
             .catch((err) => {
-                console.error(`❌ Error en @${cleanUser}:`, err.message);
-                socket.emit('error', err.message);
+                console.error(`❌ Error en @${cleanUser}:`, err.message || err);
+                socket.emit('error', err.message || String(err));
                 state.conn = null;
-                scheduleReconnect(); // <-- antes esto no pasaba, el bot se quedaba muerto
+                scheduleReconnect();
             });
     }
 
