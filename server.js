@@ -1,12 +1,31 @@
-const tiktok = require('tiktok-live-connector');
-const WebcastPushConnection = tiktok.WebcastPushConnection;
-const io = require('socket.io')(process.env.PORT || 3000, {
+const tiktokLib = require('tiktok-live-connector');
+const WebcastPushConnection = tiktokLib.WebcastPushConnection;
+const http = require('http');
+
+const PORT = process.env.PORT || 3000;
+
+// Un solo servidor HTTP: responde "OK" a peticiones normales (para el health check
+// externo que evita que Render duerma el servicio) y socket.io se monta encima.
+const httpServer = http.createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.end('OK - Rotten Proxy corriendo');
+});
+
+const io = require('socket.io')(httpServer, {
     cors: { origin: "*", methods: ["GET", "POST"] }
 });
 
-console.log("🚀 ROTTEN PROXY V19.0 - MODO ANTIBAN PRO ACTIVO");
+httpServer.listen(PORT, () => {
+    console.log(`🌐 Servidor escuchando en puerto ${PORT}`);
+});
 
-// Lista de User-Agents modernos para evitar bloqueos
+console.log("🚀 ROTTEN PROXY V20.0 - MODO ANTIBAN + AUTO-RECONEXIÓN");
+
+// --- Config de reconexión (mismo espíritu que RECONNECT_SECONDS del bot Python) ---
+const RECONNECT_BASE_MS = 6000;      // primer intento a los 6s (igual que Python)
+const RECONNECT_MAX_MS = 30000;      // techo de backoff para no martillar a TikTok
+const RECONNECT_MAX_ATTEMPTS = 0;    // 0 = infinito, igual que el "while self.running" de Python
+
 const userAgents = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
@@ -14,30 +33,74 @@ const userAgents = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0'
 ];
 
+function randomUA() {
+    return userAgents[Math.floor(Math.random() * userAgents.length)];
+}
+
+function backoffDelay(attempt) {
+    // 6s, 12s, 24s, 30s, 30s... (equivalente al sleep(RECONNECT_SECONDS) pero creciente)
+    const delay = RECONNECT_BASE_MS * Math.pow(2, Math.min(attempt, 3));
+    return Math.min(delay, RECONNECT_MAX_MS);
+}
+
 io.on('connection', (socket) => {
-    let tiktok = null;
+    // Estado propio de esta conexión de socket (equivalente a self.client / self.running del bot)
+    const state = {
+        conn: null,          // instancia actual de WebcastPushConnection
+        username: null,
+        active: false,       // true mientras el usuario quiera estar conectado (igual a self.running)
+        attempts: 0,
+        retryTimer: null,
+    };
 
-    socket.on('join', (username) => {
-        if (!username) return;
-        
-        const cleanUser = username.replace('@', '').trim();
-        console.log(`🔗 [${new Date().toLocaleTimeString()}] Intentando conectar a @${cleanUser}...`);
-        
-        // Limpiamos conexión previa si existe
-        if (tiktok) {
-            tiktok.disconnect();
-            tiktok = null;
+    function clearRetryTimer() {
+        if (state.retryTimer) {
+            clearTimeout(state.retryTimer);
+            state.retryTimer = null;
         }
+    }
 
-        // Seleccionamos un User-Agent al azar para cada conexión
-        const randomUA = userAgents[Math.floor(Math.random() * userAgents.length)];
+    function teardownConnection() {
+        if (state.conn) {
+            try {
+                state.conn.disconnect();
+            } catch (_) {
+                // ignoramos, igual que el except Exception: pass del bot
+            }
+            state.conn = null;
+        }
+    }
 
-        // CONFIGURACIÓN ANTIBAN CORREGIDA (Sin aid conflictivo)
-        tiktok = new WebcastPushConnection(cleanUser, {
+    function scheduleReconnect() {
+        if (!state.active) return; // el usuario ya se fue, no reintentamos
+        if (RECONNECT_MAX_ATTEMPTS > 0 && state.attempts >= RECONNECT_MAX_ATTEMPTS) {
+            socket.emit('status', 'GIVING_UP');
+            console.log(`🛑 [${state.username}] máximo de reintentos alcanzado.`);
+            return;
+        }
+        const delay = backoffDelay(state.attempts);
+        state.attempts += 1;
+        console.log(`⏳ [${state.username}] reconectando en ${delay / 1000}s (intento ${state.attempts})...`);
+        socket.emit('status', 'RECONNECTING');
+        clearRetryTimer();
+        state.retryTimer = setTimeout(() => connectToTikTok(state.username), delay);
+    }
+
+    function connectToTikTok(username) {
+        if (!state.active) return;
+
+        teardownConnection();
+
+        const cleanUser = username.replace('@', '').trim();
+        state.username = cleanUser;
+
+        console.log(`🔗 [${new Date().toLocaleTimeString()}] Intentando conectar a @${cleanUser}...`);
+
+        const conn = new WebcastPushConnection(cleanUser, {
             processInitialData: false,
             enableExtendedGiftInfo: true,
             enableWebsocketUpgrade: true,
-            requestPollingIntervalMs: 2500, // Intervalo más humano para evitar bans
+            requestPollingIntervalMs: 2500,
             clientParams: {
                 "app_language": "es-ES",
                 "device_platform": "web",
@@ -45,48 +108,78 @@ io.on('connection', (socket) => {
                 "browser_platform": "Win32"
             },
             requestOptions: {
-                headers: {
-                    'User-Agent': randomUA
-                }
+                headers: { 'User-Agent': randomUA() }
             }
         });
-
-        tiktok.connect().then(state => {
-            console.log(`✅ ¡ÉXITO! Conectado a @${cleanUser} (RoomId: ${state.roomId})`);
-            // Vital para que la App Android sepa que ya puede hablar
-            socket.emit('connected', { roomId: state.roomId });
-            socket.emit('status', 'LIVE');
-        }).catch(err => {
-            console.error(`❌ Error en @${cleanUser}:`, err.message);
-            // Enviamos el error a la App para que dispare la rotación de Proxy
-            socket.emit('error', err.message);
-        });
+        state.conn = conn;
 
         // Reenvío de eventos a la App Android
-        tiktok.on('chat', (data) => socket.emit('comment', data));
-        tiktok.on('gift', (data) => socket.emit('gift', data));
-        tiktok.on('like', (data) => socket.emit('like', data));
-        tiktok.on('follow', (data) => socket.emit('follow', data));
-        tiktok.on('share', (data) => socket.emit('share', data));
-        tiktok.on('social', (data) => socket.emit('social', data));
+        conn.on('chat', (data) => socket.emit('comment', data));
+        conn.on('gift', (data) => socket.emit('gift', data));
+        conn.on('like', (data) => socket.emit('like', data));
+        conn.on('follow', (data) => socket.emit('follow', data));
+        conn.on('share', (data) => socket.emit('share', data));
+        conn.on('social', (data) => socket.emit('social', data));
 
-        tiktok.on('disconnected', () => {
-            console.log(`🔌 @${cleanUser} se ha desconectado del proxy.`);
+        conn.on('disconnected', () => {
+            console.log(`🔌 @${cleanUser} se desconectó del proxy.`);
             socket.emit('disconnected', 'Stream finalizado');
+            state.conn = null;
+            scheduleReconnect(); // <-- esto es lo que faltaba: reintentar en vez de morir
         });
 
-        tiktok.on('streamEnd', () => {
+        conn.on('streamEnd', () => {
             console.log(`🎬 El stream de @${cleanUser} terminó.`);
             socket.emit('streamEnd');
+            // Si el streamer cortó el live, no tiene sentido reintentar cada 6s.
+            // Igual dejamos el intento programado pero con backoff más largo.
+            scheduleReconnect();
         });
+
+        conn.connect()
+            .then((stateInfo) => {
+                console.log(`✅ ¡ÉXITO! Conectado a @${cleanUser} (RoomId: ${stateInfo.roomId})`);
+                state.attempts = 0; // se resetea el backoff al conectar bien, igual que reconnect_attempt en Python
+                socket.emit('connected', { roomId: stateInfo.roomId });
+                socket.emit('status', 'LIVE');
+            })
+            .catch((err) => {
+                console.error(`❌ Error en @${cleanUser}:`, err.message);
+                socket.emit('error', err.message);
+                state.conn = null;
+                scheduleReconnect(); // <-- antes esto no pasaba, el bot se quedaba muerto
+            });
+    }
+
+    socket.on('join', (username) => {
+        if (!username) return;
+        state.active = true;
+        state.attempts = 0;
+        clearRetryTimer();
+        connectToTikTok(username);
+    });
+
+    socket.on('leave', () => {
+        state.active = false;
+        clearRetryTimer();
+        teardownConnection();
     });
 
     socket.on('disconnect', () => {
-        if (tiktok) {
-            tiktok.disconnect();
-            tiktok = null;
-        }
+        state.active = false;
+        clearRetryTimer();
+        teardownConnection();
     });
+});
+
+// --- Protección contra crashes del proceso completo ---
+// Igual que el "except Exception" amplio del bot: logueamos y seguimos vivos
+// en vez de dejar que Render reinicie el proceso (y tumbe TODAS las conexiones activas).
+process.on('uncaughtException', (err) => {
+    console.error('⚠️ uncaughtException (proceso sigue vivo):', err);
+});
+process.on('unhandledRejection', (reason) => {
+    console.error('⚠️ unhandledRejection (proceso sigue vivo):', reason);
 });
 
 setInterval(() => {
