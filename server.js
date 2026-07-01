@@ -1,11 +1,20 @@
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
-const TIKTOK = require('tiktok-live-connector');
 
-// --- IMPORTACIÓN RESILIENTE ---
-// Detecta si la librería usa exportación nombrada o directa
-const WebcastPushConnection = TIKTOK.WebcastPushConnection || TIKTOK;
+// --- IMPORTACIÓN DINÁMICA DE TIKTOK ---
+const TIKTOK_LIB = require('tiktok-live-connector');
+
+// Esta lógica detecta el constructor en cualquier versión (v0.x o v1.x)
+let WebcastPushConnection;
+if (TIKTOK_LIB.WebcastPushConnection) {
+    WebcastPushConnection = TIKTOK_LIB.WebcastPushConnection;
+} else if (typeof TIKTOK_LIB === 'function') {
+    WebcastPushConnection = TIKTOK_LIB;
+} else {
+    // Si la librería se importó como un módulo ESM en CommonJS
+    WebcastPushConnection = TIKTOK_LIB.default ? TIKTOK_LIB.default.WebcastPushConnection : TIKTOK_LIB;
+}
 
 const app = express();
 const server = http.createServer(app);
@@ -13,7 +22,7 @@ const io = new Server(server, { cors: { origin: "*" } });
 
 const PORT = process.env.PORT || 3000;
 
-app.get('/', (req, res) => res.send('🚀 PROXY V19.6 - STABLE'));
+app.get('/', (req, res) => res.send('🚀 ROTTEN PROXY V19.7 - CONSTRUCTOR FIXED'));
 
 io.on('connection', (socket) => {
     let tiktok = null;
@@ -22,12 +31,19 @@ io.on('connection', (socket) => {
         if (!username) return;
         const user = username.replace('@', '').trim().toLowerCase();
         
-        if (tiktok) tiktok.disconnect();
+        if (tiktok) {
+            try { tiktok.disconnect(); } catch(e){}
+            tiktok = null;
+        }
 
-        console.log(`🔗 Intentando conectar a: ${user}`);
+        console.log(`🔗 Conectando a: ${user}`);
 
         try {
-            // Constructor ultra-limpio para evitar errores de tipo
+            // Verificación de seguridad antes de instanciar
+            if (typeof WebcastPushConnection !== 'function') {
+                throw new Error("El constructor de TikTok no es una función. Revisa la versión de la librería.");
+            }
+
             tiktok = new WebcastPushConnection(user, {
                 processInitialData: true,
                 enableExtendedGiftInfo: true,
@@ -39,11 +55,9 @@ io.on('connection', (socket) => {
                 socket.emit('connected', { status: "success", roomId: state.roomId });
             }).catch(err => {
                 console.error("❌ Error TikTok:", err.message);
-                // Enviamos el mensaje real para que Android decida si rotar
                 socket.emit('error', `TikTok: ${err.message}`);
             });
 
-            // Eventos para la App
             tiktok.on('chat', (d) => socket.emit('comment', d));
             tiktok.on('gift', (d) => socket.emit('gift', d));
             tiktok.on('social', (d) => {
@@ -53,7 +67,7 @@ io.on('connection', (socket) => {
             });
 
         } catch (e) {
-            console.error("🔥 Error en constructor:", e.message);
+            console.error("🔥 Error crítico:", e.message);
             socket.emit('error', `Proxy-Internal-Error: ${e.message}`);
         }
     });
@@ -63,4 +77,10 @@ io.on('connection', (socket) => {
     });
 });
 
-server.listen(PORT, () => console.log(`Proxy V19.6 activo en puerto ${PORT}`));
+server.listen(PORT, () => {
+    console.log(`
+    🚀 PROXY V19.7 - MODO ESTABLE
+    ----------------------------
+    Constructor detectado: ${typeof WebcastPushConnection === 'function' ? 'OK ✅' : 'ERROR ❌'}
+    `);
+});
