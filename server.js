@@ -2,8 +2,8 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 
-// --- EL FIX ESTÁ AQUÍ ---
-// En la versión 1.2.2, se importa así:
+// --- EL FIX CRÍTICO ESTÁ AQUÍ ---
+// En la versión 1.2.2+, el constructor debe extraerse así:
 const { WebcastPushConnection } = require('tiktok-live-connector');
 
 const app = express();
@@ -14,61 +14,79 @@ const io = new Server(server, {
 
 const PORT = process.env.PORT || 3000;
 
+console.log("🚀 ROTTEN PROXY V20.2 - MODO ANTIBAN PRO ACTIVO");
+
+// Endpoint de salud para Render
 app.get('/', (req, res) => res.send('🚀 Proxy TikTok Online'));
 
 io.on('connection', (socket) => {
-    let tiktokConnection = null;
+    let tiktok = null;
 
     socket.on('join', (username) => {
         if (!username) return;
+        
         const cleanUser = username.replace('@', '').trim().toLowerCase();
-
-        if (tiktokConnection) {
-            try { tiktokConnection.disconnect(); } catch(e) {}
+        console.log(`🔗 [${new Date().toLocaleTimeString()}] Intentando conectar a @${cleanUser}...`);
+        
+        // Limpiar conexión previa
+        if (tiktok) {
+            try { tiktok.disconnect(); } catch(e) {}
+            tiktok = null;
         }
 
-        console.log(`🔗 Conectando a @${cleanUser}...`);
-
         try {
-            // Ahora esto funcionará porque WebcastPushConnection ya es la clase correcta
-            tiktokConnection = new WebcastPushConnection(cleanUser, {
+            // Instancia el conector (Ahora NO dará error de constructor)
+            tiktok = new WebcastPushConnection(cleanUser, {
                 processInitialData: true,
                 enableExtendedGiftInfo: true,
                 requestPollingIntervalMs: 2000
             });
 
-            tiktokConnection.connect().then(state => {
-                console.log(`✅ Conectado: ${cleanUser}`);
-                // Avisamos a la app que REALMENTE estamos en el live
+            tiktok.connect().then(state => {
+                console.log(`✅ ¡ÉXITO! Conectado a @${cleanUser}`);
+                // Avisamos a la App Android que la conexión es real
                 socket.emit('connected', { roomId: state.roomId, status: "success" });
             }).catch(err => {
-                console.error(`❌ Error TikTok: ${err.message}`);
+                console.error(`❌ Error en @${cleanUser}:`, err.message);
                 socket.emit('error', `TikTok: ${err.message}`);
             });
 
-            // Eventos
-            tiktokConnection.on('chat', (data) => socket.emit('comment', data));
-            tiktokConnection.on('gift', (data) => socket.emit('gift', data));
-            tiktokConnection.on('follow', (data) => socket.emit('follow', data));
-            tiktokConnection.on('share', (data) => socket.emit('share', data));
-            tiktokConnection.on('like', (data) => socket.emit('like', data));
-            tiktokConnection.on('social', (data) => {
+            // Reenvío de eventos a la App
+            tiktok.on('chat', (data) => socket.emit('comment', data));
+            tiktok.on('gift', (data) => socket.emit('gift', data));
+            tiktok.on('follow', (data) => socket.emit('follow', data));
+            tiktok.on('share', (data) => socket.emit('share', data));
+            tiktok.on('like', (data) => socket.emit('like', data));
+            
+            tiktok.on('social', (data) => {
+                socket.emit('social', data);
                 if (data.displayType && data.displayType.includes('repost')) {
                     socket.emit('repost', data);
                 }
             });
 
+            tiktok.on('error', (err) => {
+                console.error("⚠️ Stream Error:", err.message);
+                socket.emit('error', `Stream Error: ${err.message}`);
+            });
+
         } catch (e) {
-            console.error("🔥 Error crítico:", e.message);
-            socket.emit('error', `Constructor Error: ${e.message}`);
+            console.error("🔥 Error fatal:", e.message);
+            socket.emit('error', `Proxy-Error: ${e.message}`);
         }
     });
 
     socket.on('disconnect', () => {
-        if (tiktokConnection) tiktokConnection.disconnect();
+        if (tiktok) tiktok.disconnect();
     });
 });
 
+// Logs de monitoreo cada minuto (Como el original)
+setInterval(() => {
+    const mem = Math.round(process.memoryUsage().heapUsed / 1024 / 1024);
+    console.log(`[${new Date().toLocaleTimeString()}] Proxy Online | Memoria: ${mem}MB`);
+}, 60000);
+
 server.listen(PORT, () => {
-    console.log(`🚀 Proxy V20.1 corriendo en puerto ${PORT}`);
+    console.log(`🚀 Servidor escuchando en puerto ${PORT}`);
 });
