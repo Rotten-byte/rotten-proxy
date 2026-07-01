@@ -1,7 +1,7 @@
 {
-  "name": "rotten-proxy-free",
+  "name": "rotten-proxy-v2",
   "version": "1.0.0",
-  "description": "Proxy TikTok Gratuito",
+  "description": "Proxy estable para bot TikTok",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
@@ -9,5 +9,8 @@
   "dependencies": {
     "tiktok-live-connector": "^23.0.0",
     "socket.io": "^4.7.2"
+  },
+  "engines": {
+    "node": "18.x"
   }
 }
