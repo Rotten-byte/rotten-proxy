@@ -3,11 +3,10 @@ const http = require('http');
 
 const PORT = process.env.PORT || 3000;
 
-// Un solo servidor HTTP: responde "OK" a peticiones normales (para el health check
-// externo que evita que Render duerma el servicio) y socket.io se monta encima.
+// Servidor HTTP para Health Check y Socket.io
 const httpServer = http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end('OK - Rotten Proxy corriendo');
+    res.end('OK - Rotten Proxy AFK corriendo');
 });
 
 const io = require('socket.io')(httpServer, {
@@ -18,33 +17,29 @@ httpServer.listen(PORT, () => {
     console.log(`🌐 Servidor escuchando en puerto ${PORT}`);
 });
 
-console.log("🚀 ROTTEN PROXY V21.0 - TIKTOOL + AUTO-RECONEXIÓN");
+console.log("🚀 ROTTEN PROXY AFK V21.0 - OPTIMIZADO CONTRA 403");
 
-// --- Diagnóstico: confirma si la key de TikTool realmente llegó ---
+// Diagnóstico de API KEY
 if (process.env.TIKTOOL_API_KEY) {
     const k = process.env.TIKTOOL_API_KEY;
-    console.log(`🔑 TIKTOOL_API_KEY detectada: ${k.slice(0, 8)}...${k.slice(-4)} (${k.length} caracteres)`);
+    console.log(`🔑 TIKTOOL_API_KEY detectada: ${k.slice(0, 8)}...${k.slice(-4)}`);
 } else {
-    console.log("⚠️ TIKTOOL_API_KEY NO está definida. Sacá una gratis en https://tik.tools");
+    console.log("⚠️ TIKTOOL_API_KEY NO DEFINIDA");
 }
 
-// --- Config de reconexión (mismo espíritu que RECONNECT_SECONDS del bot Python) ---
-const RECONNECT_BASE_MS = 6000;      // primer intento a los 6s (igual que Python)
-const RECONNECT_MAX_MS = 30000;      // techo de backoff para no martillar a TikTok
-const RECONNECT_MAX_ATTEMPTS = 0;    // 0 = infinito, igual que el "while self.running" de Python
+const RECONNECT_BASE_MS = 6000;
+const RECONNECT_MAX_MS = 30000;
 
 function backoffDelay(attempt) {
-    // 6s, 12s, 24s, 30s, 30s... (equivalente al sleep(RECONNECT_SECONDS) pero creciente)
     const delay = RECONNECT_BASE_MS * Math.pow(2, Math.min(attempt, 3));
     return Math.min(delay, RECONNECT_MAX_MS);
 }
 
 io.on('connection', (socket) => {
-    // Estado propio de esta conexión de socket (equivalente a self.client / self.running del bot)
     const state = {
-        conn: null,          // instancia actual de WebcastPushConnection
+        conn: null,
         username: null,
-        active: false,       // true mientras el usuario quiera estar conectado (igual a self.running)
+        active: false,
         attempts: 0,
         retryTimer: null,
     };
@@ -58,25 +53,16 @@ io.on('connection', (socket) => {
 
     function teardownConnection() {
         if (state.conn) {
-            try {
-                state.conn.disconnect();
-            } catch (_) {
-                // ignoramos, igual que el except Exception: pass del bot
-            }
+            try { state.conn.disconnect(); } catch (_) {}
             state.conn = null;
         }
     }
 
     function scheduleReconnect() {
-        if (!state.active) return; // el usuario ya se fue, no reintentamos
-        if (RECONNECT_MAX_ATTEMPTS > 0 && state.attempts >= RECONNECT_MAX_ATTEMPTS) {
-            socket.emit('status', 'GIVING_UP');
-            console.log(`🛑 [${state.username}] máximo de reintentos alcanzado.`);
-            return;
-        }
+        if (!state.active) return;
         const delay = backoffDelay(state.attempts);
         state.attempts += 1;
-        console.log(`⏳ [${state.username}] reconectando en ${delay / 1000}s (intento ${state.attempts})...`);
+        console.log(`⏳ [${state.username}] reconectando en ${delay / 1000}s...`);
         socket.emit('status', 'RECONNECTING');
         clearRetryTimer();
         state.retryTimer = setTimeout(() => connectToTikTok(state.username), delay);
@@ -84,58 +70,61 @@ io.on('connection', (socket) => {
 
     function connectToTikTok(username) {
         if (!state.active) return;
-
         teardownConnection();
 
         const cleanUser = username.replace('@', '').trim();
         state.username = cleanUser;
 
-        console.log(`🔗 [${new Date().toLocaleTimeString()}] Intentando conectar a @${cleanUser}...`);
+        console.log(`🔗 Intentando conectar a @${cleanUser}...`);
 
         const conn = new TikTokLive({
             uniqueId: cleanUser,
             apiKey: process.env.TIKTOOL_API_KEY,
-            mode: 'relayed', // recomendado por TikTool para producción / multi-usuario
+            mode: 'relayed',
         });
         state.conn = conn;
 
-        // Reenvío de eventos a la App Android.
-        // El "user" viene anidado (data.user.uniqueId, data.user.nickname, etc.)
+        // Eventos
         conn.on('chat', (data) => socket.emit('comment', data));
         conn.on('gift', (data) => socket.emit('gift', data));
         conn.on('like', (data) => socket.emit('like', data));
         conn.on('member', (data) => socket.emit('member', data));
-        conn.on('social', (data) => socket.emit('social', data)); // follow + share vienen acá
+        conn.on('social', (data) => socket.emit('social', data));
 
-        // Nombres de evento defensivos: no sabemos con certeza cuál dispara el SDK
-        // al cortarse la conexión, así que escuchamos varios candidatos.
-        // Los que no existan simplemente nunca se disparan (no rompen nada).
         ['disconnected', 'disconnect', 'close', 'streamEnd'].forEach((evt) => {
             conn.on(evt, () => {
-                console.log(`🔌 @${cleanUser} se desconectó del proxy (evento: ${evt}).`);
-                socket.emit('disconnected', 'Stream finalizado');
-                state.conn = null;
-                scheduleReconnect();
+                if (state.active) {
+                    console.log(`🔌 @${cleanUser} desconectado (evento: ${evt}).`);
+                    scheduleReconnect();
+                }
             });
         });
 
         conn.connect()
             .then(() => {
-                console.log(`✅ ¡ÉXITO! Conectado a @${cleanUser}`);
-                state.attempts = 0; // se resetea el backoff al conectar bien
-                socket.emit('connected', { uniqueId: cleanUser });
+                console.log(`✅ ¡ÉXITO! @${cleanUser} conectado.`);
+                state.attempts = 0;
                 socket.emit('status', 'LIVE');
             })
             .catch((err) => {
-                console.error(`❌ Error en @${cleanUser}:`, err.message || err);
-                socket.emit('error', err.message || String(err));
+                const errorMsg = err.message || String(err);
+                console.error(`❌ Error en @${cleanUser}:`, errorMsg);
+                
+                socket.emit('error', errorMsg);
                 state.conn = null;
-                scheduleReconnect();
+
+                // --- MEJORA CRÍTICA: DETECCIÓN DE 403 ---
+                if (errorMsg.includes('403') || errorMsg.includes('Forbidden')) {
+                    console.log(`🛑 Bloqueo 403 detectado. Deteniendo reintentos para enfriar IP.`);
+                    socket.emit('status', 'IP_BLOQUEADA');
+                    // NO llamamos a scheduleReconnect para que la App decida rotar el proxy
+                } else {
+                    scheduleReconnect();
+                }
             });
     }
 
     socket.on('join', (username) => {
-        if (!username) return;
         state.active = true;
         state.attempts = 0;
         clearRetryTimer();
@@ -155,15 +144,8 @@ io.on('connection', (socket) => {
     });
 });
 
-// --- Protección contra crashes del proceso completo ---
-// Igual que el "except Exception" amplio del bot: logueamos y seguimos vivos
-// en vez de dejar que Render reinicie el proceso (y tumbe TODAS las conexiones activas).
-process.on('uncaughtException', (err) => {
-    console.error('⚠️ uncaughtException (proceso sigue vivo):', err);
-});
-process.on('unhandledRejection', (reason) => {
-    console.error('⚠️ unhandledRejection (proceso sigue vivo):', reason);
-});
+process.on('uncaughtException', (err) => console.error('⚠️ Exception:', err));
+process.on('unhandledRejection', (reason) => console.error('⚠️ Rejection:', reason));
 
 setInterval(() => {
     const mem = Math.round(process.memoryUsage().heapUsed / 1024 / 1024);
