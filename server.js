@@ -3,7 +3,6 @@ const http = require('http');
 
 const PORT = process.env.PORT || 3000;
 
-// Servidor HTTP para Health Check y Socket.io
 const httpServer = http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
     res.end('OK - Rotten Proxy AFK corriendo');
@@ -17,14 +16,17 @@ httpServer.listen(PORT, () => {
     console.log(`🌐 Servidor escuchando en puerto ${PORT}`);
 });
 
-console.log("🚀 ROTTEN PROXY AFK V21.0 - OPTIMIZADO CONTRA 403");
+console.log("🚀 ROTTEN PROXY AFK V22.0 - MULTI-KEY & SESSION BYPASS");
 
-// Diagnóstico de API KEY
-if (process.env.TIKTOOL_API_KEY) {
-    const k = process.env.TIKTOOL_API_KEY;
-    console.log(`🔑 TIKTOOL_API_KEY detectada: ${k.slice(0, 8)}...${k.slice(-4)}`);
-} else {
-    console.log("⚠️ TIKTOOL_API_KEY NO DEFINIDA");
+// Función para obtener una llave al azar de las disponibles
+function getApiKey() {
+    const keys = [
+        process.env.TIKTOOL_API_KEY,
+        process.env.TIKTOOL_API_KEY2
+    ].filter(k => k && k.length > 5); // Filtramos solo las que existen
+    
+    if (keys.length === 0) return null;
+    return keys[Math.floor(Math.random() * keys.length)];
 }
 
 const RECONNECT_BASE_MS = 6000;
@@ -39,6 +41,7 @@ io.on('connection', (socket) => {
     const state = {
         conn: null,
         username: null,
+        sessionId: null, // Guardamos la sesión
         active: false,
         attempts: 0,
         retryTimer: null,
@@ -65,21 +68,31 @@ io.on('connection', (socket) => {
         console.log(`⏳ [${state.username}] reconectando en ${delay / 1000}s...`);
         socket.emit('status', 'RECONNECTING');
         clearRetryTimer();
-        state.retryTimer = setTimeout(() => connectToTikTok(state.username), delay);
+        state.retryTimer = setTimeout(() => connectToTikTok(state.username, state.sessionId), delay);
     }
 
-    function connectToTikTok(username) {
+    function connectToTikTok(username, sessionId) {
         if (!state.active) return;
         teardownConnection();
 
-        const cleanUser = username.replace('@', '').trim();
+        // Aseguramos que username sea String para evitar el error .replace
+        const cleanUser = String(username).replace('@', '').trim();
         state.username = cleanUser;
+        state.sessionId = sessionId;
 
-        console.log(`🔗 Intentando conectar a @${cleanUser}...`);
+        const apiKey = getApiKey();
+        if (!apiKey) {
+            console.error("❌ ERROR: No hay API Keys configuradas en Railway.");
+            socket.emit('error', 'API Key missing on server');
+            return;
+        }
+
+        console.log(`🔗 Conectando @${cleanUser} usando Key: ${apiKey.slice(0,4)}...`);
 
         const conn = new TikTokLive({
             uniqueId: cleanUser,
-            apiKey: process.env.TIKTOOL_API_KEY,
+            apiKey: apiKey,
+            sessionId: sessionId, // <--- USAMOS EL SESSION ID PARA EL 403
             mode: 'relayed',
         });
         state.conn = conn;
@@ -94,7 +107,7 @@ io.on('connection', (socket) => {
         ['disconnected', 'disconnect', 'close', 'streamEnd'].forEach((evt) => {
             conn.on(evt, () => {
                 if (state.active) {
-                    console.log(`🔌 @${cleanUser} desconectado (evento: ${evt}).`);
+                    console.log(`🔌 @${cleanUser} desconectado (${evt}).`);
                     scheduleReconnect();
                 }
             });
@@ -102,7 +115,7 @@ io.on('connection', (socket) => {
 
         conn.connect()
             .then(() => {
-                console.log(`✅ ¡ÉXITO! @${cleanUser} conectado.`);
+                console.log(`✅ ¡CONECTADO! @${cleanUser}`);
                 state.attempts = 0;
                 socket.emit('status', 'LIVE');
             })
@@ -113,22 +126,21 @@ io.on('connection', (socket) => {
                 socket.emit('error', errorMsg);
                 state.conn = null;
 
-                // --- MEJORA CRÍTICA: DETECCIÓN DE 403 ---
                 if (errorMsg.includes('403') || errorMsg.includes('Forbidden')) {
-                    console.log(`🛑 Bloqueo 403 detectado. Deteniendo reintentos para enfriar IP.`);
+                    console.log(`🛑 Bloqueo 403. Rotando IP...`);
                     socket.emit('status', 'IP_BLOQUEADA');
-                    // NO llamamos a scheduleReconnect para que la App decida rotar el proxy
                 } else {
                     scheduleReconnect();
                 }
             });
     }
 
-    socket.on('join', (username) => {
+    // Recibimos username y sessionId desde la App
+    socket.on('join', (username, sessionId) => {
         state.active = true;
         state.attempts = 0;
         clearRetryTimer();
-        connectToTikTok(username);
+        connectToTikTok(username, sessionId);
     });
 
     socket.on('leave', () => {
