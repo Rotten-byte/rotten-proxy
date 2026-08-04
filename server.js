@@ -62,6 +62,12 @@ io.on('connection', (socket) => {
                 });
             });
 
+            // Capturamos errores del WebSocket para evitar que crasheen el proceso
+            conn.on('error', (err) => {
+                console.error(`⚠️ Error de WebSocket en @${username}:`, err && err.message ? err.message : err);
+            });
+
+
             conn.connect()
                 .then(() => socket.emit('connected'))
                 .catch((err) => socket.emit('error', err.message || 'Error de conexión'));
@@ -75,7 +81,13 @@ io.on('connection', (socket) => {
 
     socket.on('disconnect', () => {
         state.active = false;
-        if (state.conn) state.conn.disconnect();
+        if (state.conn) {
+            try {
+                state.conn.disconnect();
+            } catch (e) {
+                console.error("⚠️ Error al desconectar TikTokLive:", e.message || e);
+            }
+        }
     });
 });
 
