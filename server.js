@@ -29,7 +29,11 @@ io.on('connection', (socket) => {
 
     function connectToTikTok(username, sessionId) {
         if (!state.active) return;
-        if (state.conn) try { state.conn.disconnect(); } catch(e) {}
+        
+        // Desconexión segura de una instancia previa si existe
+        if (state.conn) {
+            try { state.conn.disconnect(); } catch(e) {}
+        }
 
         const apiKey = getApiKey();
         if (!apiKey) {
@@ -53,19 +57,24 @@ io.on('connection', (socket) => {
             conn.on('follow', (data) => socket.emit('follow', data));
             conn.on('share', (data) => socket.emit('share', data));
 
-            // DETECCIÓN DE BLOQUEO (MEJORADO)
+            // DETECCIÓN DE EVENTOS DE CIERRE
             ['disconnected', 'close', 'streamEnd'].forEach((evt) => {
                 conn.on(evt, () => { 
                     console.log(`⚠️ Evento ${evt} en @${username}`);
-                    // Avisamos a la app para que ROTE IP si esto pasa muy seguido
                     socket.emit('error', 'TikTok Connection Lost'); 
                 });
             });
 
             conn.connect()
                 .then(() => socket.emit('connected'))
-                .catch((err) => socket.emit('error', err.message || 'Error de conexión'));
-        } catch (e) { console.error("Error:", e); }
+                .catch((err) => {
+                    console.error("Error en conn.connect():", err.message);
+                    socket.emit('error', err.message || 'Error de conexión');
+                });
+
+        } catch (e) { 
+            console.error("Error al inicializar TikTokLive:", e); 
+        }
     }
 
     socket.on('join', (username, sessionId) => {
@@ -73,9 +82,20 @@ io.on('connection', (socket) => {
         connectToTikTok(username, sessionId);
     });
 
+    // CORRECCIÓN CRÍTICA AQUÍ:
     socket.on('disconnect', () => {
+        console.log("❌ App desconectada, cerrando socket de TikTok...");
         state.active = false;
-        if (state.conn) state.conn.disconnect();
+        if (state.conn) {
+            try {
+                // El try-catch evita que el server se caiga si el WebSocket 
+                // se cierra antes de estar totalmente establecido.
+                state.conn.disconnect();
+            } catch (e) {
+                console.log("⚠️ Aviso: Error controlado al desconectar (WebSocket no estaba listo).");
+            }
+            state.conn = null;
+        }
     });
 });
 
