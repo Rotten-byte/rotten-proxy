@@ -4,27 +4,25 @@ const express = require('express');
 const { Server } = require('socket.io');
 const app = express();
 const httpServer = http.createServer(app);
-
 app.get('/', (req, res) => {
  res.status(200).send('OK - Rotten Proxy AFK is running');
 });
-
 const io = new Server(httpServer, {
  cors: { origin: "*", methods: ["GET", "POST"] }
 });
-
 function getApiKey() {
  const keys = [
  process.env.TIKTOOL_API_KEY,
- process.env.TIKTOOL_API_KEY2
+ process.env.TIKTOOL_API_KEY2,
+ process.env.TIKTOOL_API_KEY3,
+ process.env.TIKTOOL_API_KEY4,
+ process.env.TIKTOOL_API_KEY5
  ].filter(k => k && k.trim().length > 10);
  return keys.length === 0 ? null : keys[Math.floor(Math.random() * keys.length)].trim();
 }
-
 io.on('connection', (socket) => {
  const state = { conn: null, username: null, active: false };
  console.log("✅ Nueva conexión desde la App");
-
  function safeDisconnect() {
  if (state.conn) {
  try {
@@ -36,17 +34,14 @@ io.on('connection', (socket) => {
  state.conn = null;
  }
  }
-
  function connectToTikTok(username, sessionId) {
  if (!state.active) return;
  safeDisconnect();
-
  const apiKey = getApiKey();
  if (!apiKey) {
  socket.emit('error', 'No API Key en Railway');
  return;
  }
-
  try {
  const conn = new TikTokLive({
  uniqueId: username.replace('@', '').trim(),
@@ -54,21 +49,17 @@ io.on('connection', (socket) => {
  sessionId: sessionId,
  mode: 'relayed',
  });
-
  state.conn = conn;
-
  // ERROR HANDLER FIRST
  conn.on('error', (err) => {
  console.error(`⚠️ TikTokLive error en @${username}:`, err && err.message ? err.message : err);
  });
-
  // Reenvío de eventos
  conn.on('chat', (data) => socket.emit('comment', data));
  conn.on('gift', (data) => socket.emit('gift', data));
  conn.on('like', (data) => socket.emit('like', data));
  conn.on('follow', (data) => socket.emit('follow', data));
  conn.on('share', (data) => socket.emit('share', data));
-
  // DETECCIÓN DE BLOQUEO
  ['disconnected', 'close', 'streamEnd'].forEach((evt) => {
  conn.on(evt, () => {
@@ -77,7 +68,6 @@ io.on('connection', (socket) => {
  safeDisconnect();
  });
  });
-
  conn.connect()
  .then(() => {
  console.log(`✅ Conectado a @${username}`);
@@ -88,27 +78,23 @@ io.on('connection', (socket) => {
  socket.emit('error', err.message || 'Error de conexión');
  safeDisconnect();
  });
-
  } catch (e) {
  console.error("Error creando conexión:", e.message || e);
  socket.emit('error', 'Error creando conexión');
  }
  }
-
  socket.on('join', (username, sessionId) => {
  console.log(`📱 Intentando conectar a: @${username}`);
  state.active = true;
  state.username = username;
  connectToTikTok(username, sessionId);
  });
-
  socket.on('disconnect', () => {
  console.log(`❌ Desconexión de socket`);
  state.active = false;
  safeDisconnect();
  });
 });
-
 const PORT = process.env.PORT || 8080;
 httpServer.listen(PORT, '0.0.0.0', () => {
  console.log(`🚀 Servidor Privado en puerto ${PORT}`);
