@@ -21,7 +21,7 @@ function getApiKey() {
  return keys.length === 0 ? null : keys[Math.floor(Math.random() * keys.length)].trim();
 }
 io.on('connection', (socket) => {
- const state = { conn: null, username: null, active: false };
+ const state = { conn: null, username: null, active: false, retryCount: 0 };
  console.log("✅ Nueva conexión desde la App");
  function safeDisconnect() {
  if (state.conn) {
@@ -46,8 +46,7 @@ io.on('connection', (socket) => {
  const conn = new TikTokLive({
  uniqueId: username.replace('@', '').trim(),
  apiKey: apiKey,
- sessionId: sessionId,
- mode: 'relayed',
+ mode: 'web',
  });
  state.conn = conn;
  // ERROR HANDLER FIRST
@@ -60,23 +59,32 @@ io.on('connection', (socket) => {
  conn.on('like', (data) => socket.emit('like', data));
  conn.on('follow', (data) => socket.emit('follow', data));
  conn.on('share', (data) => socket.emit('share', data));
- // DETECCIÓN DE BLOQUEO
+ // DETECCIÓN DE BLOQUEO CON RECONEXIÓN
  ['disconnected', 'close', 'streamEnd'].forEach((evt) => {
  conn.on(evt, () => {
- console.log(`⚠️ Evento ${evt} en @${username}`);
- socket.emit('error', 'TikTok Connection Lost');
- safeDisconnect();
+ console.log(`⚠️ Evento ${evt} en @${username}, reintentando...`);
+ socket.emit('error', 'TikTok Connection Lost - Retrying');
+ if (state.active) {
+ state.retryCount++;
+ console.log(`🔄 Intento de reconexión ${state.retryCount} para @${username}`);
+ setTimeout(() => connectToTikTok(username, sessionId), 3000);
+ }
  });
  });
  conn.connect()
  .then(() => {
  console.log(`✅ Conectado a @${username}`);
+ state.retryCount = 0;
  socket.emit('connected');
  })
  .catch((err) => {
  console.error(`❌ Error conectando a @${username}:`, err.message || err);
  socket.emit('error', err.message || 'Error de conexión');
- safeDisconnect();
+ if (state.active) {
+ state.retryCount++;
+ console.log(`🔄 Intento de reconexión ${state.retryCount} para @${username}`);
+ setTimeout(() => connectToTikTok(username, sessionId), 3000);
+ }
  });
  } catch (e) {
  console.error("Error creando conexión:", e.message || e);
@@ -87,6 +95,7 @@ io.on('connection', (socket) => {
  console.log(`📱 Intentando conectar a: @${username}`);
  state.active = true;
  state.username = username;
+ state.retryCount = 0;
  connectToTikTok(username, sessionId);
  });
  socket.on('disconnect', () => {
