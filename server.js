@@ -46,21 +46,72 @@ io.on('connection', (socket) => {
  const state = { conn: null, username: null, active: false, retryCount: 0, reconnectTimer: null };
  console.log("✅ Nueva conexión desde la App");
 
- function safeDisconnect() {
- if (state.reconnectTimer) {
- clearTimeout(state.reconnectTimer);
- state.reconnectTimer = null;
- }
- if (state.conn) {
- try {
- state.conn.removeAllListeners();
- state.conn.disconnect();
- } catch (err) {
- console.error("⚠️ Error al desconectar:", err.message || err);
- }
- state.conn = null;
- }
- }
+  function safeDisconnect() {
+    if (state.reconnectTimer) {
+      clearTimeout(state.reconnectTimer);
+      state.reconnectTimer = null;
+    }
+
+    const conn = state.conn;
+    // Clear the reference immediately so nothing else can try to reuse
+    // this connection object while we're in the process of tearing it down.
+    state.conn = null;
+
+    if (!conn) return;
+
+    try {
+      conn.removeAllListeners();
+    } catch (err) {
+      console.error("⚠️ Error al remover listeners:", err.message || err);
+    }
+
+    // The underlying WebSocket may still be mid-handshake. Swallow any
+    // 'error' it emits so it doesn't bubble up as an uncaught exception.
+    try {
+      const ws = conn.ws || (conn.connection && conn.connection.ws) || conn.webSocket || null;
+      if (ws && typeof ws.on === 'function') {
+        if (typeof ws.removeAllListeners === 'function') {
+          ws.removeAllListeners('error');
+        }
+        ws.on('error', () => {});
+      }
+    } catch (err) {
+      // best effort only, ignore
+    }
+
+    // Give the pending connection attempt a brief moment to settle before
+    // trying to close it. Calling disconnect() while the WebSocket is still
+    // connecting throws "WebSocket was closed before the connection was
+    // established", which crashes the process if left unhandled.
+    setTimeout(() => {
+      try {
+        const ws = conn.ws || (conn.connection && conn.connection.ws) || conn.webSocket || null;
+        const readyState = ws ? ws.readyState : undefined;
+
+        // readyState: 0 = CONNECTING, 1 = OPEN, 2 = CLOSING, 3 = CLOSED
+        if (ws && readyState === 0) {
+          // Still mid-handshake: abort the pending connection instead of
+          // calling disconnect() on it.
+          try {
+            if (typeof ws.terminate === 'function') {
+              ws.terminate();
+            } else if (typeof ws.close === 'function') {
+              ws.close();
+            }
+          } catch (abortErr) {
+            console.error("⚠️ Error al abortar conexión pendiente:", abortErr.message || abortErr);
+          }
+          return;
+        }
+
+        if (typeof conn.disconnect === 'function') {
+          conn.disconnect();
+        }
+      } catch (err) {
+        console.error("⚠️ Error al desconectar (ignorado):", err.message || err);
+      }
+    }, 100);
+  }
 
  function connectToTikTok(username, sessionId) {
  if (!state.active) return;
@@ -209,9 +260,18 @@ io.on('connection', (socket) => {
 });
 
 process.on('uncaughtException', (err) => {
- console.error('❌ Excepción no atrapada:', err);
- process.exit(1);
+  // Known non-fatal error thrown by the WebSocket layer when disconnect()
+  // races with a connection attempt that hasn't finished establishing yet.
+  // safeDisconnect() already guards against this, but keep this as a
+  // defense-in-depth measure so the process doesn't die if it slips through.
+  if (err && err.message && err.message.includes('WebSocket was closed before the connection was established')) {
+    console.error('⚠️ Excepción no atrapada (ignorada):', err.message);
+    return;
+  }
+  console.error('❌ Excepción no atrapada:', err);
+  process.exit(1);
 });
+
 
 process.on('unhandledRejection', (reason, promise) => {
  console.error('❌ Promesa rechazada no manejada:', reason);
