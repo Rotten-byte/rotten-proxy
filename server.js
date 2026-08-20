@@ -4,25 +4,20 @@ const express = require('express');
 const { Server } = require('socket.io');
 const app = express();
 const httpServer = http.createServer(app);
-
 app.get('/', (req, res) => {
  res.status(200).send('OK - Rotten Proxy AFK is running');
 });
-
 const io = new Server(httpServer, {
  cors: { origin: "*", methods: ["GET", "POST"] },
  pingInterval: 25000,
  pingTimeout: 60000
 });
-
 // Whitelist desde variables de entorno
 const AUTHORIZED_USERS = (process.env.AUTHORIZED_USERS || '')
  .split(',')
  .map(u => u.trim().toLowerCase())
  .filter(u => u.length > 0);
-
 console.log(`✅ Usuarios autorizados: ${AUTHORIZED_USERS.length > 0 ? AUTHORIZED_USERS.join(', ') : 'NINGUNO'}`);
-
 function isAuthorized(username) {
  if (AUTHORIZED_USERS.length === 0) {
  console.warn('⚠️ ADVERTENCIA: No hay usuarios autorizados configurados');
@@ -30,7 +25,6 @@ function isAuthorized(username) {
  }
  return AUTHORIZED_USERS.includes(username.toLowerCase());
 }
-
 function getApiKey() {
  const keys = [
  process.env.TIKTOOL_API_KEY,
@@ -41,44 +35,91 @@ function getApiKey() {
  ].filter(k => k && k.trim().length > 10);
  return keys.length === 0 ? null : keys[Math.floor(Math.random() * keys.length)].trim();
 }
-
 io.on('connection', (socket) => {
  const state = { conn: null, username: null, active: false, retryCount: 0, reconnectTimer: null };
  console.log("✅ Nueva conexión desde la App");
 
  function safeDisconnect() {
- if (state.reconnectTimer) {
- clearTimeout(state.reconnectTimer);
- state.reconnectTimer = null;
- }
- if (state.conn) {
- try {
- state.conn.removeAllListeners();
- state.conn.disconnect();
- } catch (err) {
- console.error("⚠️ Error al desconectar:", err.message || err);
- }
- state.conn = null;
- }
+   if (state.reconnectTimer) {
+     clearTimeout(state.reconnectTimer);
+     state.reconnectTimer = null;
+   }
+
+   const conn = state.conn;
+   // Clear the reference immediately so nothing else can try to reuse
+   // this connection object while we're in the process of tearing it down.
+   state.conn = null;
+
+   if (!conn) return;
+
+   try {
+     conn.removeAllListeners();
+   } catch (err) {
+     console.error("⚠️ Error al remover listeners:", err.message || err);
+   }
+
+   // The underlying WebSocket may still be mid-handshake. Swallow any
+   // 'error' it emits so it doesn't bubble up as an uncaught exception.
+   try {
+     const ws = conn.ws || (conn.connection && conn.connection.ws) || conn.webSocket || null;
+     if (ws && typeof ws.on === 'function') {
+       if (typeof ws.removeAllListeners === 'function') {
+         ws.removeAllListeners('error');
+       }
+       ws.on('error', () => {});
+     }
+   } catch (err) {
+     // best effort only, ignore
+   }
+
+   // Give the pending connection attempt a brief moment to settle before
+   // trying to close it. Calling disconnect() while the WebSocket is still
+   // connecting throws "WebSocket was closed before the connection was
+   // established", which crashes the process if left unhandled.
+   setTimeout(() => {
+     try {
+       const ws = conn.ws || (conn.connection && conn.connection.ws) || conn.webSocket || null;
+       const readyState = ws ? ws.readyState : undefined;
+
+       // readyState: 0 = CONNECTING, 1 = OPEN, 2 = CLOSING, 3 = CLOSED
+       if (ws && readyState === 0) {
+         // Still mid-handshake: abort the pending connection instead of
+         // calling disconnect() on it.
+         try {
+           if (typeof ws.terminate === 'function') {
+             ws.terminate();
+           } else if (typeof ws.close === 'function') {
+             ws.close();
+           }
+         } catch (abortErr) {
+           console.error("⚠️ Error al abortar conexión pendiente:", abortErr.message || abortErr);
+         }
+         return;
+       }
+
+       if (typeof conn.disconnect === 'function') {
+         conn.disconnect();
+       }
+     } catch (err) {
+       console.error("⚠️ Error al desconectar (ignorado):", err.message || err);
+     }
+   }, 100);
  }
 
  function connectToTikTok(username, sessionId) {
  if (!state.active) return;
-
  if (state.retryCount > 10) {
  console.error(`❌ Máximo de reintentos alcanzado para @${username}`);
  socket.emit('error', 'Max retries exceeded');
  state.active = false;
  return;
  }
-
  safeDisconnect();
  const apiKey = getApiKey();
  if (!apiKey) {
  socket.emit('error', 'No API Key en Railway');
  return;
  }
-
  try {
  const conn = new TikTokLive({
  uniqueId: username.replace('@', '').trim(),
@@ -87,11 +128,9 @@ io.on('connection', (socket) => {
  });
  state.conn = conn;
  let hasReceivedData = false;
-
  conn.on('error', (err) => {
  console.error(`⚠️ TikTokLive error en @${username}:`, err && err.message ? err.message : err);
  });
-
  conn.on('chat', (data) => {
  hasReceivedData = true;
  try {
@@ -100,7 +139,6 @@ io.on('connection', (socket) => {
  console.error("Error emitiendo comment:", e.message);
  }
  });
-
  conn.on('gift', (data) => {
  hasReceivedData = true;
  try {
@@ -109,7 +147,6 @@ io.on('connection', (socket) => {
  console.error("Error emitiendo gift:", e.message);
  }
  });
-
  conn.on('like', (data) => {
  hasReceivedData = true;
  try {
@@ -118,7 +155,6 @@ io.on('connection', (socket) => {
  console.error("Error emitiendo like:", e.message);
  }
  });
-
  conn.on('follow', (data) => {
  hasReceivedData = true;
  try {
@@ -127,7 +163,6 @@ io.on('connection', (socket) => {
  console.error("Error emitiendo follow:", e.message);
  }
  });
-
  conn.on('share', (data) => {
  hasReceivedData = true;
  try {
@@ -136,7 +171,6 @@ io.on('connection', (socket) => {
  console.error("Error emitiendo share:", e.message);
  }
  });
-
  ['disconnected', 'close', 'streamEnd'].forEach((evt) => {
  conn.on(evt, () => {
  console.log(`⚠️ Evento ${evt} en @${username}, reintentando...`);
@@ -148,13 +182,11 @@ io.on('connection', (socket) => {
  }
  });
  });
-
  conn.connect()
  .then(() => {
  console.log(`✅ Conectado a @${username}`);
  state.retryCount = 0;
  socket.emit('connected');
-
  setTimeout(() => {
  if (!hasReceivedData && state.active) {
  console.warn(`⚠️ No data received from @${username}, reconnecting...`);
@@ -178,10 +210,8 @@ io.on('connection', (socket) => {
  socket.emit('error', 'Error creando conexión');
  }
  }
-
  socket.on('join', (username, sessionId) => {
  console.log(`📱 Intento de conexión de: @${username}`);
-
  // VERIFICAR AUTORIZACIÓN
  if (!isAuthorized(username)) {
  console.warn(`🚫 Usuario NO autorizado: @${username}`);
@@ -189,28 +219,33 @@ io.on('connection', (socket) => {
  socket.disconnect();
  return;
  }
-
  console.log(`✅ Usuario autorizado: @${username}`);
  state.active = true;
  state.username = username;
  state.retryCount = 0;
  connectToTikTok(username, sessionId);
  });
-
  socket.on('disconnect', () => {
  console.log(`❌ Desconexión de socket`);
  state.active = false;
  safeDisconnect();
  });
-
  socket.on('error', (err) => {
  console.error('Socket error:', err);
  });
 });
 
 process.on('uncaughtException', (err) => {
- console.error('❌ Excepción no atrapada:', err);
- process.exit(1);
+  // Known non-fatal error thrown by the WebSocket layer when disconnect()
+  // races with a connection attempt that hasn't finished establishing yet.
+  // safeDisconnect() already guards against this, but keep this as a
+  // defense-in-depth measure so the process doesn't die if it slips through.
+  if (err && err.message && err.message.includes('WebSocket was closed before the connection was established')) {
+    console.error('⚠️ Excepción no atrapada (ignorada):', err.message);
+    return;
+  }
+  console.error('❌ Excepción no atrapada:', err);
+  process.exit(1);
 });
 
 process.on('unhandledRejection', (reason, promise) => {
