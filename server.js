@@ -80,6 +80,7 @@ function clone(data) {
 
 function firstString(...values) {
   for (const value of values) {
+    if (typeof value !== 'string' && typeof value !== 'number') continue;
     const text = String(value || '').trim();
     if (text && text !== 'null' && text !== 'undefined') return text;
   }
@@ -94,6 +95,39 @@ function firstNumber(...values) {
   return 0;
 }
 
+function imageUrlValue(value) {
+  if (!value) return '';
+  if (typeof value === 'string') return value.startsWith('http') ? value : '';
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const url = imageUrlValue(item);
+      if (url) return url;
+    }
+    return '';
+  }
+  if (typeof value === 'object') {
+    return (
+      imageUrlValue(value.urlList) ||
+      imageUrlValue(value.url_list) ||
+      imageUrlValue(value.urls) ||
+      imageUrlValue(value.url) ||
+      imageUrlValue(value.uri) ||
+      imageUrlValue(value.avatarUrl) ||
+      imageUrlValue(value.profilePictureUrl) ||
+      ''
+    );
+  }
+  return '';
+}
+
+function firstImageUrl(...values) {
+  for (const value of values) {
+    const url = imageUrlValue(value);
+    if (url) return url;
+  }
+  return '';
+}
+
 function normalizePayload(type, rawData) {
   const data = clone(rawData);
   const user = data.user || data.userInfo || data.author || data.sender || {};
@@ -103,6 +137,17 @@ function normalizePayload(type, rawData) {
   data.nickname = firstString(data.nickname, data.displayName, user.nickname, user.nickName, user.displayName, data.uniqueId);
   data.userId = firstString(data.userId, user.userId, user.user_id, user.id);
   data.profilePictureUrl = firstString(
+    firstImageUrl(
+      data.profilePictureUrl,
+      data.avatarUrl,
+      data.profilePicture,
+      user.profilePictureUrl,
+      user.avatarUrl,
+      user.profilePicture,
+      user.avatarThumb,
+      user.avatarMedium,
+      user.avatarLarger
+    ),
     data.profilePictureUrl,
     data.avatarUrl,
     user.profilePictureUrl,
