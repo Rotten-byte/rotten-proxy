@@ -6,25 +6,6 @@ const { Server } = require('socket.io');
 const app = express();
 const httpServer = http.createServer(app);
 
-app.get('/', (_req, res) => {
-  res.status(200).json({
-    ok: true,
-    service: 'Rotten Proxy AFK',
-    message: 'running',
-  });
-});
-
-app.get('/health', (_req, res) => {
-  res.status(200).json({ ok: true, uptime: process.uptime() });
-});
-
-const io = new Server(httpServer, {
-  cors: { origin: '*', methods: ['GET', 'POST'] },
-  pingInterval: 25000,
-  pingTimeout: 60000,
-  transports: ['websocket', 'polling'],
-});
-
 function cleanUsername(username) {
   return String(username || '')
     .trim()
@@ -34,29 +15,89 @@ function cleanUsername(username) {
     .toLowerCase();
 }
 
-const AUTHORIZED_USERS = (process.env.AUTHORIZED_USERS || '')
-  .split(',')
-  .map(cleanUsername)
-  .filter(Boolean);
+function getAuthorizedUsers() {
+  return (process.env.AUTHORIZED_USERS || '')
+    .split(',')
+    .map(cleanUsername)
+    .filter(Boolean);
+}
 
-const ALLOW_ALL_USERS = String(process.env.ALLOW_ALL_USERS || '').toLowerCase() === 'true';
+function allowAllUsers() {
+  return String(process.env.ALLOW_ALL_USERS || '').toLowerCase() === 'true';
+}
+
+function isAuthorized(username) {
+  const clean = cleanUsername(username);
+  if (allowAllUsers()) return true;
+
+  const users = getAuthorizedUsers();
+  if (users.length === 0) {
+    console.warn('No hay AUTHORIZED_USERS configurado. Usa AUTHORIZED_USERS=usuario1,usuario2 o ALLOW_ALL_USERS=true');
+    return false;
+  }
+
+  return users.includes(clean);
+}
+
+function emitUnauthorized(socket, username) {
+  const clean = cleanUsername(username);
+  const message = `@${clean} no está autorizado para usar este bot`;
+  console.warn(`Usuario NO autorizado: @${clean}`);
+  socket.emit('unauthorized', {
+    ok: false,
+    username: clean,
+    message,
+  });
+  socket.emit('error', message);
+  setTimeout(() => socket.disconnect(true), 250);
+}
+
+app.get('/', (_req, res) => {
+  res.status(200).json({
+    ok: true,
+    service: 'Rotten Proxy AFK',
+    message: 'running',
+    authorizedUsersCount: getAuthorizedUsers().length,
+    allowAllUsers: allowAllUsers(),
+  });
+});
+
+app.get('/health', (_req, res) => {
+  res.status(200).json({
+    ok: true,
+    uptime: process.uptime(),
+    authorizedUsersCount: getAuthorizedUsers().length,
+    allowAllUsers: allowAllUsers(),
+  });
+});
+
+app.get('/access/:username', (req, res) => {
+  const username = cleanUsername(req.params.username);
+  res.status(200).json({
+    ok: true,
+    username,
+    authorized: isAuthorized(username),
+  });
+});
+
+const io = new Server(httpServer, {
+  cors: { origin: '*', methods: ['GET', 'POST'] },
+  pingInterval: 25000,
+  pingTimeout: 60000,
+  transports: ['websocket', 'polling'],
+});
+
 const NO_DATA_RECONNECT_MS = Number(process.env.NO_DATA_RECONNECT_MS || 0);
 
 console.log(
   `Usuarios autorizados: ${
-    ALLOW_ALL_USERS ? 'TODOS' : AUTHORIZED_USERS.length > 0 ? AUTHORIZED_USERS.join(', ') : 'NINGUNO'
+    allowAllUsers()
+      ? 'TODOS'
+      : getAuthorizedUsers().length > 0
+        ? getAuthorizedUsers().join(', ')
+        : 'NINGUNO'
   }`
 );
-
-function isAuthorized(username) {
-  const clean = cleanUsername(username);
-  if (ALLOW_ALL_USERS) return true;
-  if (AUTHORIZED_USERS.length === 0) {
-    console.warn('No hay AUTHORIZED_USERS configurado. Usa AUTHORIZED_USERS=v6mpsite o ALLOW_ALL_USERS=true');
-    return false;
-  }
-  return AUTHORIZED_USERS.includes(clean);
-}
 
 function getApiKey() {
   const keys = [
@@ -166,8 +207,14 @@ function normalizePayload(type, rawData) {
       data.diamondCount,
       data.diamond_count,
       data.diamondValue,
+      data.diamonds,
+      data.coins,
+      data.price,
       gift.diamondCount,
       gift.diamond_count,
+      gift.diamondValue,
+      gift.diamonds,
+      gift.coins,
       gift.price
     );
   }
@@ -267,6 +314,12 @@ io.on('connection', (socket) => {
 
   function scheduleReconnect(username, sessionId, reason) {
     if (!state.active || state.retryCount > 10) return;
+    if (!isAuthorized(username)) {
+      state.active = false;
+      emitUnauthorized(socket, username);
+      return;
+    }
+
     state.retryCount++;
     console.log(`Reconectando @${username} (${state.retryCount}/10): ${reason}`);
     socket.emit('error', reason);
@@ -278,8 +331,16 @@ io.on('connection', (socket) => {
 
   function connectToTikTok(username, sessionId) {
     if (!state.active) return;
+    const clean = cleanUsername(username);
+
+    if (!isAuthorized(clean)) {
+      state.active = false;
+      emitUnauthorized(socket, clean);
+      return;
+    }
+
     if (state.retryCount > 10) {
-      console.error(`Maximo de reintentos alcanzado para @${username}`);
+      console.error(`Maximo de reintentos alcanzado para @${clean}`);
       socket.emit('error', 'Max retries exceeded');
       state.active = false;
       return;
@@ -294,7 +355,6 @@ io.on('connection', (socket) => {
     }
 
     try {
-      const clean = cleanUsername(username);
       const conn = new TikTokLive({
         uniqueId: clean,
         apiKey,
@@ -396,9 +456,7 @@ io.on('connection', (socket) => {
     console.log(`Intento de conexion de: @${clean}`);
 
     if (!isAuthorized(clean)) {
-      console.warn(`Usuario NO autorizado: @${clean}`);
-      socket.emit('error', 'No tienes acceso a este bot');
-      socket.disconnect();
+      emitUnauthorized(socket, clean);
       return;
     }
 
