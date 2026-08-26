@@ -3,8 +3,30 @@ const http = require('http');
 const express = require('express');
 const { Server } = require('socket.io');
 
+const SERVICE_NAME = 'Rotten Proxy AFK';
+const GIFT_MODE = 'final-gifts-dedupe-totals-v2';
+
 const app = express();
 const httpServer = http.createServer(app);
+
+function envNumber(name, defaultValue) {
+  const value = Number(process.env[name]);
+  return Number.isFinite(value) && value >= 0 ? value : defaultValue;
+}
+
+function envBoolean(name, defaultValue = false) {
+  const value = process.env[name];
+  if (value === undefined || value === null || value === '') return defaultValue;
+  return ['true', '1', 'yes', 'y', 'si', 'sí'].includes(String(value).trim().toLowerCase());
+}
+
+const PORT = process.env.PORT || 8080;
+const MAX_RETRIES = envNumber('MAX_RETRIES', 10);
+const RECONNECT_BASE_MS = envNumber('RECONNECT_BASE_MS', 3000);
+const RECONNECT_STEP_MS = envNumber('RECONNECT_STEP_MS', 1000);
+const NO_DATA_RECONNECT_MS = envNumber('NO_DATA_RECONNECT_MS', 0);
+const GIFT_DEDUPE_MS = envNumber('GIFT_DEDUPE_MS', 4000);
+const EMIT_GIFT_PROGRESS = envBoolean('EMIT_GIFT_PROGRESS', false);
 
 function cleanUsername(username) {
   return String(username || '')
@@ -23,7 +45,7 @@ function getAuthorizedUsers() {
 }
 
 function allowAllUsers() {
-  return String(process.env.ALLOW_ALL_USERS || '').toLowerCase() === 'true';
+  return envBoolean('ALLOW_ALL_USERS', false);
 }
 
 function isAuthorized(username) {
@@ -41,7 +63,7 @@ function isAuthorized(username) {
 
 function emitUnauthorized(socket, username) {
   const clean = cleanUsername(username);
-  const message = `@${clean} no está autorizado para usar este bot`;
+  const message = `@${clean} no esta autorizado para usar este bot`;
   console.warn(`Usuario NO autorizado: @${clean}`);
   socket.emit('unauthorized', {
     ok: false,
@@ -55,9 +77,9 @@ function emitUnauthorized(socket, username) {
 app.get('/', (_req, res) => {
   res.status(200).json({
     ok: true,
-    service: 'Rotten Proxy AFK',
+    service: SERVICE_NAME,
     message: 'running',
-    giftMode: 'normalized-all-events',
+    giftMode: GIFT_MODE,
     authorizedUsersCount: getAuthorizedUsers().length,
     allowAllUsers: allowAllUsers(),
   });
@@ -67,7 +89,7 @@ app.get('/health', (_req, res) => {
   res.status(200).json({
     ok: true,
     uptime: process.uptime(),
-    giftMode: 'normalized-all-events',
+    giftMode: GIFT_MODE,
     authorizedUsersCount: getAuthorizedUsers().length,
     allowAllUsers: allowAllUsers(),
   });
@@ -88,9 +110,6 @@ const io = new Server(httpServer, {
   pingTimeout: 60000,
   transports: ['websocket', 'polling'],
 });
-
-const NO_DATA_RECONNECT_MS = Number(process.env.NO_DATA_RECONNECT_MS || 0);
-const RECENT_GIFT_MS = Number(process.env.RECENT_GIFT_MS || 12000);
 
 console.log(
   `Usuarios autorizados: ${
@@ -122,9 +141,16 @@ function clone(data) {
   }
 }
 
+function firstObject(...values) {
+  for (const value of values) {
+    if (value && typeof value === 'object' && !Array.isArray(value)) return value;
+  }
+  return {};
+}
+
 function firstString(...values) {
   for (const value of values) {
-    if (typeof value !== 'string' && typeof value !== 'number') continue;
+    if (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'bigint') continue;
     const text = String(value || '').trim();
     if (text && text !== 'null' && text !== 'undefined') return text;
   }
@@ -133,6 +159,7 @@ function firstString(...values) {
 
 function numberValue(value) {
   if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (typeof value === 'bigint') return Number(value);
   if (typeof value === 'string') {
     const number = Number(value.trim().replace(/,/g, ''));
     return Number.isFinite(number) ? number : null;
@@ -159,6 +186,7 @@ function firstFiniteNumber(defaultValue, ...values) {
 function booleanValue(value) {
   if (typeof value === 'boolean') return value;
   if (typeof value === 'number') return value !== 0;
+  if (typeof value === 'bigint') return value !== 0n;
   if (typeof value !== 'string') return null;
 
   const text = value.trim().toLowerCase();
@@ -194,6 +222,8 @@ function imageUrlValue(value) {
       imageUrlValue(value.uri) ||
       imageUrlValue(value.avatarUrl) ||
       imageUrlValue(value.profilePictureUrl) ||
+      imageUrlValue(value.giftImage) ||
+      imageUrlValue(value.image) ||
       ''
     );
   }
@@ -210,12 +240,32 @@ function firstImageUrl(...values) {
 
 function normalizePayload(type, rawData, options = {}) {
   const data = clone(rawData);
-  const user = data.user || data.userInfo || data.author || data.sender || {};
-  const gift = data.gift || data.giftInfo || data.giftDetails || {};
+  const user = firstObject(data.user, data.userInfo, data.author, data.sender, data.fromUser, data.userDetails);
+  const gift = firstObject(data.gift, data.giftInfo, data.giftDetails, data.giftExtra);
+  const giftDetails = firstObject(data.giftDetails, data.giftInfo, data.extendedGiftInfo, data.gift, data.giftExtra);
+  const common = firstObject(data.common, data.commonInfo);
 
-  data.uniqueId = firstString(data.uniqueId, data.username, user.uniqueId, user.username, user.unique_id, user.id);
-  data.nickname = firstString(data.nickname, data.displayName, user.nickname, user.nickName, user.displayName, data.uniqueId);
-  data.userId = firstString(data.userId, data.user_id, user.userId, user.user_id, user.id);
+  data.uniqueId = firstString(
+    data.uniqueId,
+    data.username,
+    data.unique_id,
+    user.uniqueId,
+    user.username,
+    user.unique_id,
+    user.displayId,
+    user.id
+  );
+  data.nickname = firstString(
+    data.nickname,
+    data.displayName,
+    data.nickName,
+    user.nickname,
+    user.nickName,
+    user.displayName,
+    data.uniqueId
+  );
+  data.userId = firstString(data.userId, data.user_id, data.userID, user.userId, user.user_id, user.id, user.idStr);
+  data.msgId = firstString(data.msgId, data.messageId, data.msg_id, common.msgId, common.messageId, common.msg_id);
   data.profilePictureUrl = firstString(
     firstImageUrl(
       data.profilePictureUrl,
@@ -226,14 +276,13 @@ function normalizePayload(type, rawData, options = {}) {
       user.profilePicture,
       user.avatarThumb,
       user.avatarMedium,
-      user.avatarLarger
+      user.avatarLarger,
+      user.avatarLarge
     ),
     data.profilePictureUrl,
     data.avatarUrl,
     user.profilePictureUrl,
-    user.avatarUrl,
-    user.avatarThumb,
-    user.avatarMedium
+    user.avatarUrl
   );
 
   if (type === 'like') {
@@ -242,8 +291,8 @@ function normalizePayload(type, rawData, options = {}) {
 
   if (type === 'gift') {
     const source = options.source || data.eventSource || 'gift';
-
     data.eventSource = source;
+
     data.giftName = firstString(
       data.giftName,
       data.gift_name,
@@ -253,13 +302,34 @@ function normalizePayload(type, rawData, options = {}) {
       gift.gift_name,
       gift.name,
       gift.title,
+      giftDetails.giftName,
+      giftDetails.gift_name,
+      giftDetails.name,
+      giftDetails.title,
       'regalo'
     );
 
-    data.giftId = firstPositiveNumber(data.giftId, data.gift_id, gift.giftId, gift.gift_id, gift.id);
+    data.giftId = firstPositiveNumber(
+      data.giftId,
+      data.gift_id,
+      gift.giftId,
+      gift.gift_id,
+      gift.id,
+      giftDetails.giftId,
+      giftDetails.gift_id,
+      giftDetails.id
+    );
     data.gift_id = data.giftId;
 
-    data.giftType = firstFiniteNumber(0, data.giftType, data.gift_type, gift.giftType, gift.gift_type);
+    data.giftType = firstFiniteNumber(
+      0,
+      data.giftType,
+      data.gift_type,
+      gift.giftType,
+      gift.gift_type,
+      giftDetails.giftType,
+      giftDetails.gift_type
+    );
     data.gift_type = data.giftType;
 
     const repeatCount = firstPositiveNumber(
@@ -285,6 +355,15 @@ function normalizePayload(type, rawData, options = {}) {
       gift.quantity,
       gift.amount,
       gift.count,
+      giftDetails.repeatCount,
+      giftDetails.repeat_count,
+      giftDetails.giftRepeatCount,
+      giftDetails.gift_repeat_count,
+      giftDetails.comboCount,
+      giftDetails.combo_count,
+      giftDetails.quantity,
+      giftDetails.amount,
+      giftDetails.count,
       1
     ) || 1;
 
@@ -298,8 +377,8 @@ function normalizePayload(type, rawData, options = {}) {
     data.amount = repeatCount;
     data.count = repeatCount;
 
-    const repeatEnd = firstBoolean(
-      true,
+    const explicitRepeatEnd = firstBoolean(
+      null,
       data.repeatEnd,
       data.repeat_end,
       data.giftRepeatEnd,
@@ -315,8 +394,17 @@ function normalizePayload(type, rawData, options = {}) {
       gift.isFinal,
       gift.is_final,
       gift.streakEnd,
-      gift.streak_end
+      gift.streak_end,
+      giftDetails.repeatEnd,
+      giftDetails.repeat_end,
+      giftDetails.giftRepeatEnd,
+      giftDetails.gift_repeat_end,
+      giftDetails.isFinal,
+      giftDetails.is_final,
+      giftDetails.streakEnd,
+      giftDetails.streak_end
     );
+    const repeatEnd = explicitRepeatEnd === null ? true : explicitRepeatEnd;
 
     data.repeatEnd = repeatEnd;
     data.repeat_end = repeatEnd;
@@ -324,6 +412,7 @@ function normalizePayload(type, rawData, options = {}) {
     data.gift_repeat_end = repeatEnd;
     data.isFinal = repeatEnd;
     data.is_final = repeatEnd;
+    data.isStreakInProgress = data.giftType === 1 && repeatEnd === false;
 
     const unitDiamonds = firstPositiveNumber(
       data.diamondCount,
@@ -338,51 +427,82 @@ function normalizePayload(type, rawData, options = {}) {
       gift.diamond_value,
       gift.diamond,
       gift.diamonds,
-      data.giftValue,
-      data.gift_value,
+      giftDetails.diamondCount,
+      giftDetails.diamond_count,
+      giftDetails.diamondValue,
+      giftDetails.diamond_value,
+      giftDetails.diamond,
+      giftDetails.diamonds,
       data.giftPrice,
       data.gift_price,
-      gift.giftValue,
-      gift.gift_value,
       gift.giftPrice,
       gift.gift_price,
+      giftDetails.giftPrice,
+      giftDetails.gift_price,
       data.price,
       gift.price,
+      giftDetails.price,
       data.cost,
       gift.cost,
+      giftDetails.cost,
       data.coin,
       gift.coin,
+      giftDetails.coin,
       data.coins,
-      gift.coins
+      gift.coins,
+      giftDetails.coins
     );
-
-    data.diamondCount = unitDiamonds;
-    data.diamond_count = unitDiamonds;
-    data.diamondValue = unitDiamonds;
-    data.diamond_value = unitDiamonds;
-    data.coins = unitDiamonds;
 
     const rawTotalDiamonds = firstPositiveNumber(
       data.totalDiamonds,
       data.total_diamonds,
-      data.totalCoins,
-      data.total_coins,
       data.totalDiamondCount,
       data.total_diamond_count,
+      data.totalCoins,
+      data.total_coins,
+      data.eventDiamonds,
+      data.event_diamonds,
+      data.finalDiamonds,
+      data.final_diamonds,
       gift.totalDiamonds,
       gift.total_diamonds,
+      gift.totalDiamondCount,
+      gift.total_diamond_count,
       gift.totalCoins,
       gift.total_coins,
-      gift.totalDiamondCount,
-      gift.total_diamond_count
+      giftDetails.totalDiamonds,
+      giftDetails.total_diamonds,
+      giftDetails.totalDiamondCount,
+      giftDetails.total_diamond_count,
+      giftDetails.totalCoins,
+      giftDetails.total_coins
     );
     const calculatedTotal = unitDiamonds > 0 ? unitDiamonds * repeatCount : 0;
     const totalDiamonds = rawTotalDiamonds || calculatedTotal;
 
+    data.unitDiamonds = unitDiamonds;
+    data.unitDiamondCount = unitDiamonds;
+    data.diamondCount = unitDiamonds;
+    data.diamond_count = unitDiamonds;
+    data.diamondValue = unitDiamonds;
+    data.diamond_value = unitDiamonds;
     data.totalDiamonds = totalDiamonds;
     data.total_diamonds = totalDiamonds;
     data.totalCoins = totalDiamonds;
     data.total_coins = totalDiamonds;
+    data.eventDiamonds = totalDiamonds;
+    data.event_diamonds = totalDiamonds;
+    data.giftPictureUrl = firstImageUrl(
+      data.giftPictureUrl,
+      data.giftImage,
+      data.image,
+      gift.giftPictureUrl,
+      gift.giftImage,
+      gift.image,
+      giftDetails.giftPictureUrl,
+      giftDetails.giftImage,
+      giftDetails.image
+    );
   }
 
   return data;
@@ -392,13 +512,43 @@ function summarize(data) {
   return JSON.stringify(data).replace(/\s+/g, ' ').slice(0, 350);
 }
 
-function giftSignature(payload) {
+function newGiftTotals() {
+  return {
+    giftEvents: 0,
+    giftUnits: 0,
+    diamonds: 0,
+  };
+}
+
+function publicGiftTotals(totals) {
+  return {
+    giftEvents: totals.giftEvents,
+    giftUnits: totals.giftUnits,
+    diamonds: totals.diamonds,
+  };
+}
+
+function giftIdentity(payload) {
+  const msgId = firstString(
+    payload.msgId,
+    payload.messageId,
+    payload.message_id,
+    payload.eventId,
+    payload.event_id
+  );
+  if (msgId) return { key: `msg:${msgId}`, strong: true };
+
   const userKey = firstString(payload.userId, payload.uniqueId, payload.nickname, 'user').toLowerCase();
   const giftKey = payload.giftId > 0
     ? `id:${payload.giftId}`
     : `name:${String(payload.giftName || 'gift').toLowerCase()}`;
-  const count = Number(payload.repeatCount || payload.comboCount || 1);
-  return `${userKey}|${giftKey}|${count}`;
+  const count = firstPositiveNumber(payload.repeatCount, payload.comboCount, payload.count, 1) || 1;
+  const total = firstPositiveNumber(payload.totalDiamonds, payload.eventDiamonds, 0);
+
+  return {
+    key: `fallback:${userKey}|${giftKey}|${count}|${total}`,
+    strong: false,
+  };
 }
 
 io.on('connection', (socket) => {
@@ -409,27 +559,50 @@ io.on('connection', (socket) => {
     retryCount: 0,
     reconnectTimer: null,
     noDataTimer: null,
-    recentGiftEvents: new Map(),
+    recentFinalGifts: new Map(),
+    totals: newGiftTotals(),
   };
 
   console.log('Nueva conexion desde la app');
-  socket.emit('hello', { ok: true, service: 'Rotten Proxy AFK' });
+  socket.emit('hello', { ok: true, service: SERVICE_NAME, giftMode: GIFT_MODE });
 
-  function cleanupRecentGiftEvents() {
+  function cleanupRecentFinalGifts() {
     const now = Date.now();
-    for (const [key, at] of state.recentGiftEvents.entries()) {
-      if (now - at > RECENT_GIFT_MS) state.recentGiftEvents.delete(key);
+    for (const [key, item] of state.recentFinalGifts.entries()) {
+      if (now - item.at > GIFT_DEDUPE_MS) state.recentFinalGifts.delete(key);
     }
   }
 
-  function markRecentGift(payload) {
-    cleanupRecentGiftEvents();
-    state.recentGiftEvents.set(giftSignature(payload), Date.now());
+  function shouldSkipFinalGift(payload) {
+    cleanupRecentFinalGifts();
+    const identity = giftIdentity(payload);
+    const seen = state.recentFinalGifts.get(identity.key);
+    if (!seen) return false;
+
+    if (identity.strong) return true;
+    return seen.source !== payload.eventSource;
   }
 
-  function hasRecentGift(payload) {
-    cleanupRecentGiftEvents();
-    return state.recentGiftEvents.has(giftSignature(payload));
+  function markFinalGift(payload) {
+    cleanupRecentFinalGifts();
+    const identity = giftIdentity(payload);
+    state.recentFinalGifts.set(identity.key, {
+      at: Date.now(),
+      source: payload.eventSource,
+    });
+  }
+
+  function attachAndAddGiftTotals(payload) {
+    state.totals.giftEvents += 1;
+    state.totals.giftUnits += firstPositiveNumber(payload.repeatCount, payload.comboCount, payload.count, 1) || 1;
+    state.totals.diamonds += firstPositiveNumber(payload.totalDiamonds, payload.eventDiamonds, 0);
+
+    const totals = publicGiftTotals(state.totals);
+    payload.sessionTotals = totals;
+    payload.sessionGiftEvents = totals.giftEvents;
+    payload.sessionGiftUnits = totals.giftUnits;
+    payload.sessionTotalDiamonds = totals.diamonds;
+    return totals;
   }
 
   function emitEvent(eventName, rawData) {
@@ -443,13 +616,25 @@ io.on('connection', (socket) => {
   function emitGift(rawData, source) {
     const payload = normalizePayload('gift', rawData, { source });
 
-    if (source === 'giftCombo' && hasRecentGift(payload)) {
-      console.log(`[${state.username}] giftCombo duplicado ignorado: ${summarize(payload)}`);
+    if (payload.isStreakInProgress) {
+      if (EMIT_GIFT_PROGRESS) socket.emit('giftProgress', payload);
+      console.log(`[${state.username}] gift/${source} progreso ignorado para suma: ${summarize(payload)}`);
       return;
     }
 
+    if (shouldSkipFinalGift(payload)) {
+      console.log(`[${state.username}] gift/${source} duplicado ignorado: ${summarize(payload)}`);
+      return;
+    }
+
+    markFinalGift(payload);
+    const totals = attachAndAddGiftTotals(payload);
+
     socket.emit('gift', payload);
-    if (source === 'gift') markRecentGift(payload);
+    socket.emit('giftTotal', {
+      username: state.username,
+      totals,
+    });
     console.log(`[${state.username}] gift/${source}: ${summarize(payload)}`);
   }
 
@@ -484,7 +669,7 @@ io.on('connection', (socket) => {
 
     const conn = state.conn;
     state.conn = null;
-    state.recentGiftEvents.clear();
+    state.recentFinalGifts.clear();
     if (!conn) return;
 
     try {
@@ -520,20 +705,24 @@ io.on('connection', (socket) => {
   }
 
   function scheduleReconnect(username, sessionId, reason) {
-    if (!state.active || state.retryCount > 10) return;
+    if (!state.active || state.retryCount >= MAX_RETRIES) return;
+    if (state.reconnectTimer) return;
+
     if (!isAuthorized(username)) {
       state.active = false;
       emitUnauthorized(socket, username);
       return;
     }
 
-    state.retryCount++;
-    console.log(`Reconectando @${username} (${state.retryCount}/10): ${reason}`);
+    state.retryCount += 1;
+    const delay = RECONNECT_BASE_MS + state.retryCount * RECONNECT_STEP_MS;
+
+    console.log(`Reconectando @${username} (${state.retryCount}/${MAX_RETRIES}): ${reason}`);
     socket.emit('error', reason);
-    state.reconnectTimer = setTimeout(
-      () => connectToTikTok(username, sessionId),
-      3000 + state.retryCount * 1000
-    );
+    state.reconnectTimer = setTimeout(() => {
+      state.reconnectTimer = null;
+      connectToTikTok(username, sessionId);
+    }, delay);
   }
 
   function connectToTikTok(username, sessionId) {
@@ -546,7 +735,7 @@ io.on('connection', (socket) => {
       return;
     }
 
-    if (state.retryCount > 10) {
+    if (state.retryCount >= MAX_RETRIES) {
       console.error(`Maximo de reintentos alcanzado para @${clean}`);
       socket.emit('error', 'Max retries exceeded');
       state.active = false;
@@ -558,6 +747,7 @@ io.on('connection', (socket) => {
     const apiKey = getApiKey();
     if (!apiKey) {
       socket.emit('error', 'No API Key en Railway');
+      state.active = false;
       return;
     }
 
@@ -636,7 +826,12 @@ io.on('connection', (socket) => {
         .then(() => {
           console.log(`Conectado a @${clean}`);
           state.retryCount = 0;
-          socket.emit('connected', { username: clean, message: `Conectado a @${clean}` });
+          socket.emit('connected', {
+            username: clean,
+            message: `Conectado a @${clean}`,
+            giftMode: GIFT_MODE,
+            totals: publicGiftTotals(state.totals),
+          });
 
           if (NO_DATA_RECONNECT_MS > 0) {
             state.noDataTimer = setTimeout(() => {
@@ -669,6 +864,12 @@ io.on('connection', (socket) => {
     state.active = true;
     state.username = clean;
     state.retryCount = 0;
+    state.totals = newGiftTotals();
+    state.recentFinalGifts.clear();
+    socket.emit('giftTotal', {
+      username: clean,
+      totals: publicGiftTotals(state.totals),
+    });
     connectToTikTok(clean, sessionId);
   });
 
@@ -696,7 +897,6 @@ process.on('unhandledRejection', (reason) => {
   console.error('Promesa rechazada no manejada:', reason);
 });
 
-const PORT = process.env.PORT || 8080;
 httpServer.listen(PORT, '0.0.0.0', () => {
   console.log(`Servidor privado en puerto ${PORT}`);
 });
