@@ -33,6 +33,13 @@ const STREAM_ELEMENTS_RECONNECT_MAX_MS = envNumber('STREAMELEMENTS_RECONNECT_MAX
 const STREAM_ELEMENTS_TIP_DEDUPE_MS = envNumber('STREAMELEMENTS_TIP_DEDUPE_MS', 10 * 60 * 1000);
 const STREAM_ELEMENTS_DEBUG = envBoolean('STREAMELEMENTS_DEBUG', false);
 
+const diagnostics = {
+  startedAt: new Date().toISOString(),
+  connectedSockets: 0,
+  lastStreamElementsStatus: null,
+  lastStreamElementsTip: null,
+};
+
 function cleanUsername(username) {
   return String(username || '')
     .trim()
@@ -130,6 +137,72 @@ app.get('/health', (_req, res) => {
     streamElementsConfigured: hasStreamElementsToken(),
     streamElementsDefaultChannel: getDefaultStreamElementsChannel(),
     streamElementsTopic: 'channel.tips',
+    connectedSockets: diagnostics.connectedSockets,
+    lastStreamElementsStatus: diagnostics.lastStreamElementsStatus,
+    lastStreamElementsTip: diagnostics.lastStreamElementsTip,
+  });
+});
+
+app.get('/debug/paypal-test', (req, res) => {
+  const secret = firstString(process.env.PAYPAL_TEST_SECRET, process.env.DEBUG_SECRET);
+  const requestedSecret = firstString(req.query.secret);
+
+  if (secret && requestedSecret !== secret) {
+    res.status(401).json({ ok: false, message: 'PAYPAL_TEST_SECRET incorrecto' });
+    return;
+  }
+
+  if (!secret && !envBoolean('ENABLE_PAYPAL_TEST_ENDPOINT', false)) {
+    res.status(403).json({
+      ok: false,
+      message: 'Activa ENABLE_PAYPAL_TEST_ENDPOINT=true o configura PAYPAL_TEST_SECRET para usar esta prueba',
+    });
+    return;
+  }
+
+  const channel = cleanStreamElementsChannel(req.query.channel || getDefaultStreamElementsChannel());
+  const amount = firstString(req.query.amount, '$5 USD');
+  const username = firstString(req.query.username, 'PruebaPayPal');
+  const message = firstString(req.query.message, 'Prueba de alerta desde el server');
+
+  const payload = {
+    id: `debug-${Date.now()}`,
+    eventId: `debug-${Date.now()}`,
+    source: 'streamelements',
+    provider: 'paypal',
+    paymentMethod: 'paypal',
+    status: 'success',
+    approved: 'allowed',
+    username,
+    nickname: username,
+    uniqueId: username,
+    displayName: username,
+    message,
+    amount,
+    amountValue: numberValue(amount),
+    currency: 'USD',
+    profilePictureUrl: '',
+    avatarUrl: '',
+    streamElementsChannel: channel,
+    streamElementsRoom: 'debug',
+    createdAt: new Date().toISOString(),
+  };
+
+  diagnostics.lastStreamElementsTip = {
+    at: new Date().toISOString(),
+    debug: true,
+    connectedSockets: diagnostics.connectedSockets,
+    username: payload.username,
+    amount: payload.amount,
+    channel: payload.streamElementsChannel,
+  };
+
+  io.emit('streamelementsTip', payload);
+  res.status(200).json({
+    ok: true,
+    emittedTo: diagnostics.connectedSockets,
+    event: 'streamelementsTip',
+    payload,
   });
 });
 
@@ -810,6 +883,8 @@ function giftIdentity(payload) {
 }
 
 io.on('connection', (socket) => {
+  diagnostics.connectedSockets += 1;
+
   const state = {
     conn: null,
     username: null,
@@ -928,11 +1003,17 @@ io.on('connection', (socket) => {
   }
 
   function emitStreamElementsStatus(payload) {
-    socket.emit('streamElementsStatus', {
+    const status = {
+      at: new Date().toISOString(),
+      socketId: socket.id,
+      username: state.username,
       channel: streamElementsChannelForSocket(),
       room: state.streamElementsRoom,
       ...payload,
-    });
+    };
+
+    diagnostics.lastStreamElementsStatus = status;
+    socket.emit('streamElementsStatus', status);
   }
 
   function cleanupRecentStreamElementsTips() {
@@ -1088,6 +1169,16 @@ io.on('connection', (socket) => {
     }
 
     socket.emit('streamelementsTip', payload);
+    diagnostics.lastStreamElementsTip = {
+      at: new Date().toISOString(),
+      debug: false,
+      username: payload.username,
+      amount: payload.amount,
+      channel: payload.streamElementsChannel,
+      provider: payload.provider,
+      status: payload.status,
+      approved: payload.approved,
+    };
     console.log(`[${state.username || 'sin-live'}] streamelementsTip: ${summarize(payload)}`);
   }
 
@@ -1417,6 +1508,7 @@ io.on('connection', (socket) => {
 
   socket.on('disconnect', () => {
     console.log('Desconexion de socket');
+    diagnostics.connectedSockets = Math.max(0, diagnostics.connectedSockets - 1);
     state.active = false;
     stopStreamElementsTips();
     safeDisconnect();
