@@ -32,6 +32,8 @@ const STREAM_ELEMENTS_RECONNECT_BASE_MS = envNumber('STREAMELEMENTS_RECONNECT_BA
 const STREAM_ELEMENTS_RECONNECT_MAX_MS = envNumber('STREAMELEMENTS_RECONNECT_MAX_MS', 30000);
 const STREAM_ELEMENTS_TIP_DEDUPE_MS = envNumber('STREAMELEMENTS_TIP_DEDUPE_MS', 10 * 60 * 1000);
 const STREAM_ELEMENTS_DEBUG = envBoolean('STREAMELEMENTS_DEBUG', false);
+const STREAM_ELEMENTS_EMIT_PENDING_TIPS = envBoolean('STREAMELEMENTS_EMIT_PENDING_TIPS', false);
+const STREAM_ELEMENTS_TOPICS = ['channel.tips', 'channel.activities', 'channel.tips.moderation'];
 
 const diagnostics = {
   startedAt: new Date().toISOString(),
@@ -40,6 +42,7 @@ const diagnostics = {
   lastStreamElementsMessage: null,
   lastStreamElementsError: null,
   lastStreamElementsClose: null,
+  lastStreamElementsIgnoredTip: null,
   lastStreamElementsTip: null,
 };
 const recentGlobalStreamElementsTips = new Map();
@@ -148,6 +151,7 @@ app.get('/health', (_req, res) => {
     lastStreamElementsMessage: diagnostics.lastStreamElementsMessage,
     lastStreamElementsError: diagnostics.lastStreamElementsError,
     lastStreamElementsClose: diagnostics.lastStreamElementsClose,
+    lastStreamElementsIgnoredTip: diagnostics.lastStreamElementsIgnoredTip,
     lastStreamElementsTip: diagnostics.lastStreamElementsTip,
   });
 });
@@ -632,20 +636,28 @@ function formatDonationAmount(amountValue, currency, ...fallbacks) {
 
 function normalizeStreamElementsTip(rawMessage, configuredChannel) {
   const tipData = firstObject(rawMessage.data, rawMessage.payload, rawMessage);
-  const donation = firstObject(tipData.donation, tipData.tip, tipData);
-  const donor = firstObject(donation.user, tipData.user, donation.donor, tipData.donor);
+  const activityData = firstObject(tipData.data, tipData.activity, tipData.details);
+  const donation = firstObject(tipData.donation, activityData.donation, tipData.tip, activityData.tip, tipData);
+  const donor = firstObject(donation.user, activityData.user, tipData.user, donation.donor, activityData.donor, tipData.donor, activityData);
   const amountValue = firstNumberValue(
     donation.amount,
+    activityData.amount,
     tipData.amount,
     donation.amountValue,
+    activityData.amountValue,
+    activityData.amount_value,
     tipData.amountValue
   );
-  const currency = firstString(donation.currency, tipData.currency, 'USD').toUpperCase();
+  const currency = firstString(donation.currency, activityData.currency, tipData.currency, 'USD').toUpperCase();
   const amount = formatDonationAmount(
     amountValue,
     currency,
     donation.amountText,
     donation.formattedAmount,
+    activityData.amountText,
+    activityData.amount_text,
+    activityData.formattedAmount,
+    activityData.formatted_amount,
     tipData.amountText,
     tipData.formattedAmount,
     tipData.formatted_amount
@@ -660,35 +672,45 @@ function normalizeStreamElementsTip(rawMessage, configuredChannel) {
     donor.name,
     donation.username,
     donation.name,
+    activityData.username,
+    activityData.displayName,
+    activityData.display_name,
+    activityData.name,
     tipData.username,
+    tipData.displayName,
+    tipData.display_name,
     'Alguien'
   );
   const id = firstString(
     tipData._id,
     tipData.id,
+    tipData.activityId,
+    tipData.activity_id,
     rawMessage.id,
     tipData.transactionId,
     tipData.transaction_id,
     donation.transactionId,
     donation.transaction_id
   );
-  const streamElementsRoom = firstString(tipData.channel, donation.channel, donor.channel, rawMessage.room);
-  const provider = firstString(tipData.provider, donation.provider, donation.paymentMethod, 'streamelements');
+  const streamElementsRoom = firstString(tipData.channel, donation.channel, activityData.channel, donor.channel, rawMessage.room);
+  const provider = firstString(tipData.provider, donation.provider, activityData.provider, donation.paymentMethod, 'streamelements');
 
   return {
     id: id || `${streamElementsRoom}|${username}|${amount}|${firstString(tipData.createdAt, donation.createdAt)}`,
     eventId: id || rawMessage.id || '',
     source: 'streamelements',
+    streamElementsTopic: firstString(rawMessage.topic, tipData.topic),
+    type: firstString(tipData.type, activityData.type, 'tip'),
     provider,
-    paymentMethod: firstString(donation.paymentMethod, tipData.paymentMethod, provider),
-    status: firstString(tipData.status, donation.status),
-    approved: firstString(tipData.approved, donation.approved),
+    paymentMethod: firstString(donation.paymentMethod, activityData.paymentMethod, activityData.payment_method, tipData.paymentMethod, provider),
+    status: firstString(tipData.status, donation.status, activityData.status),
+    approved: firstString(tipData.approved, donation.approved, activityData.approved),
     transactionId: firstString(tipData.transactionId, tipData.transaction_id, donation.transactionId, donation.transaction_id),
     username,
     nickname: username,
     uniqueId: username,
     displayName: username,
-    message: firstString(donation.message, tipData.message),
+    message: firstString(donation.message, activityData.message, activityData.note, tipData.message),
     amount,
     amountValue,
     currency,
@@ -697,14 +719,17 @@ function normalizeStreamElementsTip(rawMessage, configuredChannel) {
       donor.avatarUrl,
       donor.avatar,
       donor.picture,
+      activityData.avatar,
+      activityData.avatarUrl,
+      activityData.profilePictureUrl,
       donation.profilePictureUrl,
       tipData.profilePictureUrl
     ),
-    avatarUrl: firstImageUrl(donor.avatarUrl, donor.avatar, donor.picture),
+    avatarUrl: firstImageUrl(donor.avatarUrl, donor.avatar, donor.picture, activityData.avatar, activityData.avatarUrl),
     streamElementsChannel: cleanStreamElementsChannel(configuredChannel),
     streamElementsRoom,
-    createdAt: firstString(tipData.createdAt, donation.createdAt, rawMessage.ts),
-    updatedAt: firstString(tipData.updatedAt, donation.updatedAt),
+    createdAt: firstString(tipData.createdAt, donation.createdAt, activityData.createdAt, rawMessage.ts),
+    updatedAt: firstString(tipData.updatedAt, donation.updatedAt, activityData.updatedAt),
   };
 }
 
@@ -715,6 +740,7 @@ function shouldRejectStreamElementsTip(payload) {
   if (['failed', 'fail', 'cancelled', 'canceled', 'refunded', 'refund', 'chargeback', 'pending'].includes(status)) {
     return true;
   }
+  if (approved === 'pending' && !STREAM_ELEMENTS_EMIT_PENDING_TIPS) return true;
   if (['denied', 'rejected', 'blocked', 'ignored'].includes(approved)) return true;
   return false;
 }
@@ -1059,7 +1085,9 @@ io.on('connection', (socket) => {
     streamElementsReconnectTimer: null,
     streamElementsRetryCount: 0,
     streamElementsNonce: 0,
-    streamElementsSubscribeSent: false,
+    streamElementsSubscribeSentTopics: new Set(),
+    streamElementsSubscribedTopics: new Set(),
+    streamElementsSubscribeTopicByNonce: new Map(),
     streamElementsFatalError: false,
     recentStreamElementsTips: new Map(),
   };
@@ -1249,33 +1277,39 @@ io.on('connection', (socket) => {
 
   function subscribeStreamElementsTips(ws, reconnectToken) {
     if (reconnectToken) return;
-    if (state.streamElementsSubscribeSent) return;
 
     const channel = streamElementsChannelForSocket();
     const auth = getStreamElementsAuth(channel);
     if (!auth) return;
 
     const room = getStreamElementsRoom(channel);
-    const request = {
-      type: 'subscribe',
-      nonce: `channel-tips-${Date.now()}-${++state.streamElementsNonce}`,
-      data: {
-        topic: 'channel.tips',
-        token: auth.token,
-        token_type: auth.tokenType,
-      },
-    };
-    if (room) request.data.room = room;
+    STREAM_ELEMENTS_TOPICS.forEach((topic) => {
+      if (state.streamElementsSubscribeSentTopics.has(topic)) return;
 
-    if (sendWebSocketJson(ws, request)) {
-      state.streamElementsSubscribeSent = true;
-      emitStreamElementsStatus({
-        ok: true,
-        status: 'subscribing',
-        topic: 'channel.tips',
-        tokenSource: auth.source,
-      });
-    }
+      const nonce = `${topic.replace(/[^a-z0-9]+/gi, '-')}-${Date.now()}-${++state.streamElementsNonce}`;
+      const request = {
+        type: 'subscribe',
+        nonce,
+        data: {
+          topic,
+          token: auth.token,
+          token_type: auth.tokenType,
+        },
+      };
+      if (room) request.data.room = room;
+
+      if (sendWebSocketJson(ws, request)) {
+        state.streamElementsSubscribeSentTopics.add(topic);
+        state.streamElementsSubscribeTopicByNonce.set(nonce, topic);
+        emitStreamElementsStatus({
+          ok: true,
+          status: 'subscribing',
+          topic,
+          subscribedTopics: Array.from(state.streamElementsSubscribedTopics),
+          tokenSource: auth.source,
+        });
+      }
+    });
   }
 
   function handleStreamElementsMessage(ws, raw, reconnectToken) {
@@ -1309,17 +1343,25 @@ io.on('connection', (socket) => {
     }
 
     if (message.type === 'response') {
+      const responseTopic = firstString(
+        message.data && message.data.topic,
+        state.streamElementsSubscribeTopicByNonce.get(firstString(message.nonce)),
+        'channel.tips'
+      );
+
       if (message.error) {
         const detail = firstString(message.data && message.data.message, message.error);
-        console.error(`StreamElements subscribe error: ${message.error} ${detail}`);
+        console.error(`StreamElements subscribe error (${responseTopic}): ${message.error} ${detail}`);
         emitStreamElementsStatus({
           ok: false,
           status: 'error',
+          topic: responseTopic,
           error: message.error,
           message: detail,
+          subscribedTopics: Array.from(state.streamElementsSubscribedTopics),
         });
 
-        if (['err_unauthorized', 'err_bad_request', 'invalid_message_type'].includes(message.error)) {
+        if (responseTopic === 'channel.tips' && ['err_unauthorized', 'err_bad_request', 'invalid_message_type'].includes(message.error)) {
           state.streamElementsFatalError = true;
           stopStreamElementsTips();
         }
@@ -1328,33 +1370,63 @@ io.on('connection', (socket) => {
 
       state.streamElementsRoom = firstString(message.data && message.data.room, state.streamElementsRoom);
       state.streamElementsRetryCount = 0;
+      state.streamElementsSubscribedTopics.add(responseTopic);
       const responseAuth = getStreamElementsAuth(streamElementsChannelForSocket());
       emitStreamElementsStatus({
         ok: true,
         status: 'subscribed',
-        topic: firstString(message.data && message.data.topic, 'channel.tips'),
+        topic: responseTopic,
+        subscribedTopics: Array.from(state.streamElementsSubscribedTopics),
         tokenSource: responseAuth ? responseAuth.source : '',
       });
       console.log(
-        `[${state.username || 'sin-live'}] StreamElements suscrito a channel.tips` +
+        `[${state.username || 'sin-live'}] StreamElements suscrito a ${responseTopic}` +
           `${state.streamElementsRoom ? ` room=${state.streamElementsRoom}` : ''}`
       );
       return;
     }
 
-    if (message.type !== 'message' || firstString(message.topic, message.data && message.data.topic) !== 'channel.tips') {
+    const topic = firstString(message.topic, message.data && message.data.topic);
+    if (message.type !== 'message' || !STREAM_ELEMENTS_TOPICS.includes(topic)) {
       return;
+    }
+
+    if (topic === 'channel.activities') {
+      const activityType = firstString(message.data && message.data.type, message.data && message.data.data && message.data.data.type).toLowerCase();
+      if (activityType && activityType !== 'tip') return;
     }
 
     const payload = normalizeStreamElementsTip(message, streamElementsChannelForSocket());
     if (!payload) return;
 
     if (shouldRejectStreamElementsTip(payload)) {
+      diagnostics.lastStreamElementsIgnoredTip = {
+        at: new Date().toISOString(),
+        reason: 'status_or_moderation',
+        topic,
+        username: payload.username,
+        amount: payload.amount,
+        channel: payload.streamElementsChannel,
+        provider: payload.provider,
+        status: payload.status,
+        approved: payload.approved,
+      };
       console.log(`[${state.username || 'sin-live'}] tip StreamElements ignorado por estado: ${summarize(payload)}`);
       return;
     }
 
     if (shouldSkipStreamElementsTip(payload)) {
+      diagnostics.lastStreamElementsIgnoredTip = {
+        at: new Date().toISOString(),
+        reason: 'duplicate',
+        topic,
+        username: payload.username,
+        amount: payload.amount,
+        channel: payload.streamElementsChannel,
+        provider: payload.provider,
+        status: payload.status,
+        approved: payload.approved,
+      };
       console.log(`[${state.username || 'sin-live'}] tip StreamElements duplicado ignorado: ${summarize(payload)}`);
       return;
     }
