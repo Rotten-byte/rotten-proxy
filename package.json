@@ -1,19 +1,19 @@
 {
-  "name": "rotten-stream-proxy",
-  "version": "21.0.0",
-  "description": "Proxy resiliente para TikTok Live, regalos y alertas PayPal/StreamElements",
-  "main": "server.js",
+  "name": "rotten-paypal-streamelements-proxy",
+  "version": "1.1.0",
+  "private": true,
+  "type": "commonjs",
   "scripts": {
-    "start": "node server.js",
-    "check": "node --check server.js"
+    "start": "node server-completo-paypal-streamelements.cjs",
+    "check": "node --check server-completo-paypal-streamelements.cjs"
   },
   "engines": {
     "node": "20.x"
   },
   "dependencies": {
-    "@tiktool/live": "^2.10.0",
-    "express": "^4.18.2",
-    "socket.io": "^4.7.2",
-    "ws": "^8.18.0"
+    "@tiktool/live": "latest",
+    "express": "latest",
+    "socket.io": "latest",
+    "ws": "latest"
   }
 }
