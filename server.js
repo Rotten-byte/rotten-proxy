@@ -1141,7 +1141,10 @@ io.on('connection', (socket) => {
   }
 
   function streamElementsChannelForSocket() {
-    return state.streamElementsChannel || getDefaultStreamElementsChannel();
+    const configuredChannels = getConfiguredStreamElementsChannels();
+    return state.streamElementsChannel ||
+      getDefaultStreamElementsChannel() ||
+      (configuredChannels.length === 1 ? configuredChannels[0] : '');
   }
 
   function emitStreamElementsStatus(payload) {
