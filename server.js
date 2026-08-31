@@ -1043,6 +1043,7 @@ io.on('connection', (socket) => {
     streamElementsReconnectTimer: null,
     streamElementsRetryCount: 0,
     streamElementsNonce: 0,
+    streamElementsSubscribeSent: false,
     streamElementsFatalError: false,
     recentStreamElementsTips: new Map(),
   };
@@ -1232,6 +1233,7 @@ io.on('connection', (socket) => {
 
   function subscribeStreamElementsTips(ws, reconnectToken) {
     if (reconnectToken) return;
+    if (state.streamElementsSubscribeSent) return;
 
     const channel = streamElementsChannelForSocket();
     const auth = getStreamElementsAuth(channel);
@@ -1249,7 +1251,15 @@ io.on('connection', (socket) => {
     };
     if (room) request.data.room = room;
 
-    sendWebSocketJson(ws, request);
+    if (sendWebSocketJson(ws, request)) {
+      state.streamElementsSubscribeSent = true;
+      emitStreamElementsStatus({
+        ok: true,
+        status: 'subscribing',
+        topic: 'channel.tips',
+        tokenSource: auth.source,
+      });
+    }
   }
 
   function handleStreamElementsMessage(ws, raw, reconnectToken) {
@@ -1379,6 +1389,7 @@ io.on('connection', (socket) => {
     if (resetRetry) state.streamElementsRetryCount = 0;
     state.streamElementsFatalError = false;
     state.streamElementsRoom = '';
+    state.streamElementsSubscribeSent = false;
 
     const url = buildStreamElementsUrl(reconnectToken);
     let ws;
@@ -1401,6 +1412,7 @@ io.on('connection', (socket) => {
     addWebSocketListener(ws, 'open', () => {
       if (state.streamElementsWs !== ws) return;
       console.log(`[${state.username || 'sin-live'}] StreamElements WS conectado para ${channel}`);
+      subscribeStreamElementsTips(ws, reconnectToken);
     });
 
     addWebSocketListener(ws, 'message', (raw) => {
