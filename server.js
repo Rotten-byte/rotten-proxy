@@ -122,6 +122,7 @@ app.get('/', (_req, res) => {
     authorizedUsersCount: getAuthorizedUsers().length,
     allowAllUsers: allowAllUsers(),
     streamElementsConfigured: hasStreamElementsToken(),
+    streamElementsConfiguredChannels: getConfiguredStreamElementsChannels(),
     streamElementsDefaultChannel: getDefaultStreamElementsChannel(),
     streamElementsTopic: 'channel.tips',
   });
@@ -135,6 +136,7 @@ app.get('/health', (_req, res) => {
     authorizedUsersCount: getAuthorizedUsers().length,
     allowAllUsers: allowAllUsers(),
     streamElementsConfigured: hasStreamElementsToken(),
+    streamElementsConfiguredChannels: getConfiguredStreamElementsChannels(),
     streamElementsDefaultChannel: getDefaultStreamElementsChannel(),
     streamElementsTopic: 'channel.tips',
     connectedSockets: diagnostics.connectedSockets,
@@ -357,7 +359,120 @@ function firstImageUrl(...values) {
   return '';
 }
 
-function getStreamElementsAuth() {
+function normalizeStreamElementsTokenType(value, defaultValue = 'jwt') {
+  const tokenType = String(value || defaultValue || 'jwt').trim().toLowerCase();
+  return ['jwt', 'apikey', 'oauth2'].includes(tokenType) ? tokenType : 'jwt';
+}
+
+function streamElementsEnvSuffix(channel) {
+  return cleanStreamElementsChannel(channel).toUpperCase().replace(/[^A-Z0-9]+/g, '_');
+}
+
+function tokenConfigFromValue(value, source, fallbackTokenType = 'jwt') {
+  if (typeof value === 'string') {
+    const token = value.trim();
+    return token ? { token, tokenType: normalizeStreamElementsTokenType(fallbackTokenType), room: '', source } : null;
+  }
+
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+
+  const jwt = firstString(value.token, value.jwt, value.JWT);
+  const apiKey = firstString(value.apiKey, value.apikey, value.api_key, value.overlayToken, value.overlay_token);
+  const oauth2 = firstString(value.oauth2, value.oauthToken, value.oauth_token, value.accessToken, value.access_token);
+  const token = firstString(jwt, apiKey, oauth2);
+  if (!token) return null;
+
+  const explicitType = firstString(value.tokenType, value.token_type, value.type);
+  const tokenType = normalizeStreamElementsTokenType(
+    explicitType || (apiKey ? 'apikey' : oauth2 ? 'oauth2' : 'jwt')
+  );
+
+  return {
+    token,
+    tokenType,
+    room: firstString(value.room, value.channelId, value.channel_id, value.channelRoom, value.channel_room),
+    source,
+  };
+}
+
+function getStreamElementsTokensJson() {
+  const raw = firstString(process.env.STREAMELEMENTS_TOKENS_JSON, process.env.STREAM_ELEMENTS_TOKENS_JSON);
+  const map = new Map();
+  if (!raw) return map;
+
+  try {
+    const parsed = JSON.parse(raw);
+    const addEntry = (channelInput, config) => {
+      const channel = cleanStreamElementsChannel(channelInput);
+      const tokenConfig = tokenConfigFromValue(config, 'tokens_json');
+      if (channel && tokenConfig) map.set(channel, tokenConfig);
+    };
+
+    if (Array.isArray(parsed)) {
+      parsed.forEach((item) => {
+        const channel = firstString(
+          item && item.channel,
+          item && item.username,
+          item && item.user,
+          item && item.tipLink,
+          item && item.tip_link,
+          item && item.url,
+          item && item.link
+        );
+        addEntry(channel, item);
+      });
+    } else if (parsed && typeof parsed === 'object') {
+      Object.entries(parsed).forEach(([channel, config]) => addEntry(channel, config));
+    }
+  } catch (err) {
+    console.error('STREAMELEMENTS_TOKENS_JSON invalido:', err.message || err);
+  }
+
+  return map;
+}
+
+function getStreamElementsChannelEnvAuth(channel) {
+  const suffix = streamElementsEnvSuffix(channel);
+  if (!suffix) return null;
+
+  const jwt = firstString(
+    process.env[`STREAMELEMENTS_TOKEN_${suffix}`],
+    process.env[`STREAM_ELEMENTS_TOKEN_${suffix}`],
+    process.env[`STREAMELEMENTS_JWT_${suffix}`],
+    process.env[`STREAM_ELEMENTS_JWT_${suffix}`]
+  );
+  const apiKey = firstString(
+    process.env[`STREAMELEMENTS_API_KEY_${suffix}`],
+    process.env[`STREAM_ELEMENTS_API_KEY_${suffix}`],
+    process.env[`STREAMELEMENTS_OVERLAY_TOKEN_${suffix}`],
+    process.env[`STREAM_ELEMENTS_OVERLAY_TOKEN_${suffix}`]
+  );
+  const oauth2 = firstString(
+    process.env[`STREAMELEMENTS_OAUTH_TOKEN_${suffix}`],
+    process.env[`STREAM_ELEMENTS_OAUTH_TOKEN_${suffix}`]
+  );
+  const token = firstString(jwt, apiKey, oauth2);
+  if (!token) return null;
+
+  return {
+    token,
+    tokenType: normalizeStreamElementsTokenType(
+      firstString(
+        process.env[`STREAMELEMENTS_TOKEN_TYPE_${suffix}`],
+        process.env[`STREAM_ELEMENTS_TOKEN_TYPE_${suffix}`]
+      ) || (apiKey ? 'apikey' : oauth2 ? 'oauth2' : 'jwt')
+    ),
+    room: firstString(
+      process.env[`STREAMELEMENTS_ROOM_${suffix}`],
+      process.env[`STREAM_ELEMENTS_ROOM_${suffix}`],
+      process.env[`STREAMELEMENTS_CHANNEL_ID_${suffix}`],
+      process.env[`STREAM_ELEMENTS_CHANNEL_ID_${suffix}`]
+    ),
+    source: `env_${suffix}`,
+  };
+}
+
+function getGlobalStreamElementsAuth() {
   const jwt = firstString(
     process.env.STREAMELEMENTS_TOKEN,
     process.env.STREAM_ELEMENTS_TOKEN,
@@ -374,34 +489,61 @@ function getStreamElementsAuth() {
     process.env.STREAMELEMENTS_OAUTH_TOKEN,
     process.env.STREAM_ELEMENTS_OAUTH_TOKEN
   );
-  const explicitType = firstString(
-    process.env.STREAMELEMENTS_TOKEN_TYPE,
-    process.env.STREAM_ELEMENTS_TOKEN_TYPE
-  ).toLowerCase();
-
   const token = firstString(jwt, apiKey, oauth2);
   if (!token) return null;
 
-  let tokenType = explicitType;
-  if (!tokenType) {
-    tokenType = jwt ? 'jwt' : apiKey ? 'apikey' : 'oauth2';
+  return {
+    token,
+    tokenType: normalizeStreamElementsTokenType(
+      firstString(process.env.STREAMELEMENTS_TOKEN_TYPE, process.env.STREAM_ELEMENTS_TOKEN_TYPE) ||
+        (apiKey ? 'apikey' : oauth2 ? 'oauth2' : 'jwt')
+    ),
+    room: getGlobalStreamElementsRoom(),
+    source: 'global_env',
+  };
+}
+
+function getStreamElementsAuth(channelInput = '') {
+  const channel = cleanStreamElementsChannel(channelInput);
+  if (channel) {
+    const mappedAuth = getStreamElementsTokensJson().get(channel);
+    if (mappedAuth) return mappedAuth;
+
+    const envAuth = getStreamElementsChannelEnvAuth(channel);
+    if (envAuth) return envAuth;
   }
-  if (!['jwt', 'apikey', 'oauth2'].includes(tokenType)) tokenType = 'jwt';
 
-  return { token, tokenType };
+  return getGlobalStreamElementsAuth();
 }
 
-function hasStreamElementsToken() {
-  return Boolean(getStreamElementsAuth());
+function getConfiguredStreamElementsChannels() {
+  const channels = new Set(getStreamElementsTokensJson().keys());
+
+  Object.keys(process.env).forEach((key) => {
+    if (/TOKEN_TYPE|ROOM|CHANNEL_ID/.test(key)) return;
+    const match = key.match(/^STREAM_?ELEMENTS_(?:TOKEN|JWT|API_KEY|OVERLAY_TOKEN|OAUTH_TOKEN)_([A-Z0-9_]+)$/);
+    if (match && match[1]) channels.add(match[1].toLowerCase());
+  });
+
+  return Array.from(channels).sort();
 }
 
-function getStreamElementsRoom() {
+function hasStreamElementsToken(channelInput = '') {
+  return Boolean(getStreamElementsAuth(channelInput)) || getConfiguredStreamElementsChannels().length > 0;
+}
+
+function getGlobalStreamElementsRoom() {
   return firstString(
     process.env.STREAMELEMENTS_ROOM,
     process.env.STREAM_ELEMENTS_ROOM,
     process.env.STREAMELEMENTS_CHANNEL_ID,
     process.env.STREAM_ELEMENTS_CHANNEL_ID
   );
+}
+
+function getStreamElementsRoom(channelInput = '') {
+  const auth = getStreamElementsAuth(channelInput);
+  return firstString(auth && auth.room, getGlobalStreamElementsRoom());
 }
 
 function getWebSocketCtor() {
@@ -1080,10 +1222,11 @@ io.on('connection', (socket) => {
   function subscribeStreamElementsTips(ws, reconnectToken) {
     if (reconnectToken) return;
 
-    const auth = getStreamElementsAuth();
+    const channel = streamElementsChannelForSocket();
+    const auth = getStreamElementsAuth(channel);
     if (!auth) return;
 
-    const room = getStreamElementsRoom();
+    const room = getStreamElementsRoom(channel);
     const request = {
       type: 'subscribe',
       nonce: `channel-tips-${Date.now()}-${++state.streamElementsNonce}`,
@@ -1139,10 +1282,12 @@ io.on('connection', (socket) => {
 
       state.streamElementsRoom = firstString(message.data && message.data.room, state.streamElementsRoom);
       state.streamElementsRetryCount = 0;
+      const responseAuth = getStreamElementsAuth(streamElementsChannelForSocket());
       emitStreamElementsStatus({
         ok: true,
         status: 'subscribed',
         topic: firstString(message.data && message.data.topic, 'channel.tips'),
+        tokenSource: responseAuth ? responseAuth.source : '',
       });
       console.log(
         `[${state.username || 'sin-live'}] StreamElements suscrito a channel.tips` +
@@ -1195,13 +1340,14 @@ io.on('connection', (socket) => {
       return;
     }
 
-    const auth = getStreamElementsAuth();
+    const auth = getStreamElementsAuth(channel);
     if (!auth) {
       state.streamElementsFatalError = true;
       emitStreamElementsStatus({
         ok: false,
         status: 'missing_token',
-        message: 'Falta STREAMELEMENTS_TOKEN en el server',
+        message: `Falta token de StreamElements para ${channel}`,
+        configuredChannels: getConfiguredStreamElementsChannels(),
       });
       return;
     }
@@ -1237,6 +1383,7 @@ io.on('connection', (socket) => {
       ok: true,
       status: 'connecting',
       topic: 'channel.tips',
+      tokenSource: auth.source,
     });
 
     addWebSocketListener(ws, 'open', () => {
