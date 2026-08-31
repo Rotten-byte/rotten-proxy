@@ -174,13 +174,17 @@ app.get('/debug/paypal-test', (req, res) => {
   }
 
   const channel = cleanStreamElementsChannel(req.query.channel || getDefaultStreamElementsChannel());
-  const amount = firstString(req.query.amount, '$5 USD');
+  const rawAmount = firstString(req.query.amount, '$5 USD');
+  const currency = firstString(req.query.currency, 'USD').toUpperCase();
+  const amountValue = numberValue(rawAmount);
+  const amountText = formatDonationAmount(amountValue, currency, rawAmount);
   const username = firstString(req.query.username, 'PruebaPayPal');
   const message = firstString(req.query.message, 'Prueba de alerta desde el server');
+  const id = `debug-${Date.now()}`;
 
   const payload = {
-    id: `debug-${Date.now()}`,
-    eventId: `debug-${Date.now()}`,
+    id,
+    eventId: id,
     source: 'streamelements',
     provider: 'paypal',
     paymentMethod: 'paypal',
@@ -191,9 +195,12 @@ app.get('/debug/paypal-test', (req, res) => {
     uniqueId: username,
     displayName: username,
     message,
-    amount,
-    amountValue: numberValue(amount),
-    currency: 'USD',
+    amount: amountValue !== null ? amountValue : amountText,
+    amountText,
+    formattedAmount: amountText,
+    displayAmount: amountText,
+    amountValue,
+    currency,
     profilePictureUrl: '',
     avatarUrl: '',
     streamElementsChannel: channel,
@@ -207,7 +214,10 @@ app.get('/debug/paypal-test', (req, res) => {
     connectedSockets: diagnostics.connectedSockets,
     username: payload.username,
     amount: payload.amount,
+    amountText: payload.amountText,
+    message: payload.message,
     channel: payload.streamElementsChannel,
+    topic: 'debug',
   };
 
   io.emit('streamelementsTip', payload);
@@ -281,11 +291,33 @@ function firstString(...values) {
   return '';
 }
 
+function textValue(value) {
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'bigint') {
+    const text = String(value || '').trim();
+    return text && text !== 'null' && text !== 'undefined' ? text : '';
+  }
+
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return firstString(value.message, value.text, value.body, value.content, value.value, value.note, value.comment);
+  }
+
+  return '';
+}
+
+function firstText(...values) {
+  for (const value of values) {
+    const text = textValue(value);
+    if (text) return text;
+  }
+  return '';
+}
+
 function numberValue(value) {
   if (typeof value === 'number') return Number.isFinite(value) ? value : null;
   if (typeof value === 'bigint') return Number(value);
   if (typeof value === 'string') {
-    const number = Number(value.trim().replace(/,/g, ''));
+    const match = value.trim().replace(/,/g, '').match(/-?\d+(?:\.\d+)?/);
+    const number = match ? Number(match[0]) : NaN;
     return Number.isFinite(number) ? number : null;
   }
   return null;
@@ -627,7 +659,7 @@ function formatDonationAmount(amountValue, currency, ...fallbacks) {
   const fallback = firstString(...fallbacks);
   const code = firstString(currency).toUpperCase();
   const amount = numberValue(amountValue);
-  if (amount === null) return fallback || (code ? code : '');
+  if (amount === null) return fallback || '';
 
   const text = moneyText(amount);
   if (code === 'USD' || code === 'MXN') return `$${text} ${code}`;
@@ -639,31 +671,111 @@ function normalizeStreamElementsTip(rawMessage, configuredChannel) {
   const activityData = firstObject(tipData.data, tipData.activity, tipData.details);
   const donation = firstObject(tipData.donation, activityData.donation, tipData.tip, activityData.tip, tipData);
   const donor = firstObject(donation.user, activityData.user, tipData.user, donation.donor, activityData.donor, tipData.donor, activityData);
+  const donationAmount = firstObject(donation.amount);
+  const activityAmount = firstObject(activityData.amount);
+  const tipAmount = firstObject(tipData.amount);
   const amountValue = firstNumberValue(
-    donation.amount,
-    activityData.amount,
-    tipData.amount,
     donation.amountValue,
+    donation.amount_value,
+    donation.value,
+    donation.tipAmount,
+    donation.tip_amount,
+    donation.total,
+    donation.gross,
+    donation.grossAmount,
+    donation.gross_amount,
+    donation.amount,
+    donationAmount.value,
+    donationAmount.amount,
+    donationAmount.total,
+    donationAmount.gross,
+    donationAmount.grossAmount,
+    donationAmount.gross_amount,
     activityData.amountValue,
     activityData.amount_value,
-    tipData.amountValue
+    activityData.value,
+    activityData.tipAmount,
+    activityData.tip_amount,
+    activityData.total,
+    activityData.gross,
+    activityData.grossAmount,
+    activityData.gross_amount,
+    activityData.amount,
+    activityAmount.value,
+    activityAmount.amount,
+    activityAmount.total,
+    activityAmount.gross,
+    activityAmount.grossAmount,
+    activityAmount.gross_amount,
+    tipData.amountValue,
+    tipData.amount_value,
+    tipData.value,
+    tipData.tipAmount,
+    tipData.tip_amount,
+    tipData.total,
+    tipData.gross,
+    tipData.grossAmount,
+    tipData.gross_amount,
+    tipData.amount,
+    tipAmount.value,
+    tipAmount.amount,
+    tipAmount.total,
+    tipAmount.gross,
+    tipAmount.grossAmount,
+    tipAmount.gross_amount
   );
-  const currency = firstString(donation.currency, activityData.currency, tipData.currency, 'USD').toUpperCase();
-  const amount = formatDonationAmount(
+  const currency = firstString(
+    donation.currency,
+    donationAmount.currency,
+    donationAmount.currencyCode,
+    donationAmount.currency_code,
+    activityData.currency,
+    activityAmount.currency,
+    activityAmount.currencyCode,
+    activityAmount.currency_code,
+    tipData.currency,
+    tipAmount.currency,
+    tipAmount.currencyCode,
+    tipAmount.currency_code,
+    'USD'
+  ).toUpperCase();
+  const amountText = formatDonationAmount(
     amountValue,
     currency,
     donation.amountText,
+    donation.amount_text,
     donation.formattedAmount,
+    donation.formatted_amount,
+    donation.displayAmount,
+    donation.display_amount,
+    donationAmount.text,
+    donationAmount.formatted,
+    donationAmount.formattedAmount,
+    donationAmount.formatted_amount,
     activityData.amountText,
     activityData.amount_text,
     activityData.formattedAmount,
     activityData.formatted_amount,
+    activityData.displayAmount,
+    activityData.display_amount,
+    activityAmount.text,
+    activityAmount.formatted,
+    activityAmount.formattedAmount,
+    activityAmount.formatted_amount,
     tipData.amountText,
+    tipData.amount_text,
     tipData.formattedAmount,
-    tipData.formatted_amount
+    tipData.formatted_amount,
+    tipData.displayAmount,
+    tipData.display_amount,
+    tipAmount.text,
+    tipAmount.formatted,
+    tipAmount.formattedAmount,
+    tipAmount.formatted_amount
   );
+  const appAmount = amountValue !== null ? amountValue : numberValue(amountText);
 
-  if (!amount) return null;
+  if (appAmount === null && !amountText) return null;
 
   const username = firstString(
     donor.username,
@@ -694,9 +806,29 @@ function normalizeStreamElementsTip(rawMessage, configuredChannel) {
   );
   const streamElementsRoom = firstString(tipData.channel, donation.channel, activityData.channel, donor.channel, rawMessage.room);
   const provider = firstString(tipData.provider, donation.provider, activityData.provider, donation.paymentMethod, 'streamelements');
+  const message = firstText(
+    donation.message,
+    donation.note,
+    donation.comment,
+    donation.text,
+    donation.msg,
+    donation.description,
+    activityData.message,
+    activityData.note,
+    activityData.comment,
+    activityData.text,
+    activityData.msg,
+    activityData.description,
+    tipData.message,
+    tipData.note,
+    tipData.comment,
+    tipData.text,
+    tipData.msg,
+    tipData.description
+  );
 
   return {
-    id: id || `${streamElementsRoom}|${username}|${amount}|${firstString(tipData.createdAt, donation.createdAt)}`,
+    id: id || `${streamElementsRoom}|${username}|${amountText}|${message}|${firstString(tipData.createdAt, donation.createdAt)}`,
     eventId: id || rawMessage.id || '',
     source: 'streamelements',
     streamElementsTopic: firstString(rawMessage.topic, tipData.topic),
@@ -710,8 +842,11 @@ function normalizeStreamElementsTip(rawMessage, configuredChannel) {
     nickname: username,
     uniqueId: username,
     displayName: username,
-    message: firstString(donation.message, activityData.message, activityData.note, tipData.message),
-    amount,
+    message,
+    amount: appAmount !== null ? appAmount : amountText,
+    amountText,
+    formattedAmount: amountText,
+    displayAmount: amountText,
     amountValue,
     currency,
     profilePictureUrl: firstImageUrl(
@@ -1406,6 +1541,8 @@ io.on('connection', (socket) => {
         topic,
         username: payload.username,
         amount: payload.amount,
+        amountText: payload.amountText,
+        message: payload.message,
         channel: payload.streamElementsChannel,
         provider: payload.provider,
         status: payload.status,
@@ -1422,6 +1559,8 @@ io.on('connection', (socket) => {
         topic,
         username: payload.username,
         amount: payload.amount,
+        amountText: payload.amountText,
+        message: payload.message,
         channel: payload.streamElementsChannel,
         provider: payload.provider,
         status: payload.status,
@@ -1438,7 +1577,10 @@ io.on('connection', (socket) => {
       emittedTo: diagnostics.connectedSockets,
       username: payload.username,
       amount: payload.amount,
+      amountText: payload.amountText,
+      message: payload.message,
       channel: payload.streamElementsChannel,
+      topic: payload.streamElementsTopic,
       provider: payload.provider,
       status: payload.status,
       approved: payload.approved,
@@ -1486,7 +1628,9 @@ io.on('connection', (socket) => {
     if (resetRetry) state.streamElementsRetryCount = 0;
     state.streamElementsFatalError = false;
     state.streamElementsRoom = '';
-    state.streamElementsSubscribeSent = false;
+    state.streamElementsSubscribeSentTopics.clear();
+    state.streamElementsSubscribedTopics.clear();
+    state.streamElementsSubscribeTopicByNonce.clear();
 
     const url = buildStreamElementsUrl(reconnectToken);
     let ws;
