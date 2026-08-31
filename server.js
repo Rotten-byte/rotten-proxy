@@ -37,6 +37,7 @@ const diagnostics = {
   startedAt: new Date().toISOString(),
   connectedSockets: 0,
   lastStreamElementsStatus: null,
+  lastStreamElementsMessage: null,
   lastStreamElementsTip: null,
 };
 const recentGlobalStreamElementsTips = new Map();
@@ -142,6 +143,7 @@ app.get('/health', (_req, res) => {
     streamElementsTopic: 'channel.tips',
     connectedSockets: diagnostics.connectedSockets,
     lastStreamElementsStatus: diagnostics.lastStreamElementsStatus,
+    lastStreamElementsMessage: diagnostics.lastStreamElementsMessage,
     lastStreamElementsTip: diagnostics.lastStreamElementsTip,
   });
 });
@@ -547,13 +549,20 @@ function getStreamElementsRoom(channelInput = '') {
   return firstString(auth && auth.room, getGlobalStreamElementsRoom());
 }
 
-function getWebSocketCtor() {
-  if (typeof globalThis.WebSocket === 'function') return globalThis.WebSocket;
+function getWebSocketRuntime() {
   try {
-    return require('ws');
+    return { ctor: require('ws'), name: 'ws' };
   } catch (_) {
-    return null;
+    if (typeof globalThis.WebSocket === 'function') {
+      return { ctor: globalThis.WebSocket, name: 'global' };
+    }
   }
+  return null;
+}
+
+function getWebSocketCtor() {
+  const runtime = getWebSocketRuntime();
+  return runtime ? runtime.ctor : null;
 }
 
 function addWebSocketListener(ws, eventName, handler) {
@@ -1267,6 +1276,15 @@ io.on('connection', (socket) => {
 
     const message = parseStreamElementsMessage(raw);
     if (!message) return;
+    diagnostics.lastStreamElementsMessage = {
+      at: new Date().toISOString(),
+      type: firstString(message.type),
+      topic: firstString(message.topic, message.data && message.data.topic),
+      room: firstString(message.room, message.data && message.data.room),
+      nonce: firstString(message.nonce),
+      error: firstString(message.error),
+      dataMessage: firstString(message.data && message.data.message),
+    };
     if (STREAM_ELEMENTS_DEBUG) {
       console.log(`[${state.username || 'sin-live'}] StreamElements raw: ${summarize(message)}`);
     }
@@ -1374,8 +1392,8 @@ io.on('connection', (socket) => {
       return;
     }
 
-    const WebSocketCtor = getWebSocketCtor();
-    if (!WebSocketCtor) {
+    const webSocketRuntime = getWebSocketRuntime();
+    if (!webSocketRuntime) {
       state.streamElementsFatalError = true;
       emitStreamElementsStatus({
         ok: false,
@@ -1394,7 +1412,7 @@ io.on('connection', (socket) => {
     const url = buildStreamElementsUrl(reconnectToken);
     let ws;
     try {
-      ws = new WebSocketCtor(url);
+      ws = new webSocketRuntime.ctor(url);
     } catch (err) {
       console.error('Error creando StreamElements WS:', err.message || err);
       scheduleStreamElementsReconnect(err.message || 'Error creando StreamElements WS', reconnectToken);
@@ -1407,6 +1425,7 @@ io.on('connection', (socket) => {
       status: 'connecting',
       topic: 'channel.tips',
       tokenSource: auth.source,
+      webSocketRuntime: webSocketRuntime.name,
     });
 
     addWebSocketListener(ws, 'open', () => {
