@@ -27,6 +27,11 @@ const RECONNECT_STEP_MS = envNumber('RECONNECT_STEP_MS', 1000);
 const NO_DATA_RECONNECT_MS = envNumber('NO_DATA_RECONNECT_MS', 0);
 const GIFT_DEDUPE_MS = envNumber('GIFT_DEDUPE_MS', 4000);
 const EMIT_GIFT_PROGRESS = envBoolean('EMIT_GIFT_PROGRESS', false);
+const STREAM_ELEMENTS_WS_URL = process.env.STREAMELEMENTS_WS_URL || 'wss://astro.streamelements.com/';
+const STREAM_ELEMENTS_RECONNECT_BASE_MS = envNumber('STREAMELEMENTS_RECONNECT_BASE_MS', 3000);
+const STREAM_ELEMENTS_RECONNECT_MAX_MS = envNumber('STREAMELEMENTS_RECONNECT_MAX_MS', 30000);
+const STREAM_ELEMENTS_TIP_DEDUPE_MS = envNumber('STREAMELEMENTS_TIP_DEDUPE_MS', 10 * 60 * 1000);
+const STREAM_ELEMENTS_DEBUG = envBoolean('STREAMELEMENTS_DEBUG', false);
 
 function cleanUsername(username) {
   return String(username || '')
@@ -35,6 +40,33 @@ function cleanUsername(username) {
     .replace(/^https?:\/\/(www\.)?tiktok\.com\/@/i, '')
     .split(/[/?#\s]/)[0]
     .toLowerCase();
+}
+
+function cleanStreamElementsChannel(input) {
+  let value = String(input || '').trim();
+  if (!value) return '';
+
+  value = value.split('#')[0].split('?')[0].trim().replace(/^@/, '');
+  const marker = 'streamelements.com/';
+  const markerIndex = value.toLowerCase().indexOf(marker);
+  if (markerIndex >= 0) value = value.slice(markerIndex + marker.length);
+
+  value = value.replace(/^\/+|\/+$/g, '');
+  if (value.includes('/')) value = value.split('/')[0];
+  value = value.replace(/^@/, '').trim().toLowerCase();
+
+  if (value === 'tip' || value === 'dashboard') return '';
+  return value.replace(/[^a-z0-9_.-]/g, '');
+}
+
+function getDefaultStreamElementsChannel() {
+  return cleanStreamElementsChannel(
+    process.env.STREAMELEMENTS_CHANNEL ||
+      process.env.STREAM_ELEMENTS_CHANNEL ||
+      process.env.STREAMELEMENTS_USERNAME ||
+      process.env.STREAM_ELEMENTS_USERNAME ||
+      ''
+  );
 }
 
 function getAuthorizedUsers() {
@@ -82,6 +114,9 @@ app.get('/', (_req, res) => {
     giftMode: GIFT_MODE,
     authorizedUsersCount: getAuthorizedUsers().length,
     allowAllUsers: allowAllUsers(),
+    streamElementsConfigured: hasStreamElementsToken(),
+    streamElementsDefaultChannel: getDefaultStreamElementsChannel(),
+    streamElementsTopic: 'channel.tips',
   });
 });
 
@@ -92,6 +127,9 @@ app.get('/health', (_req, res) => {
     giftMode: GIFT_MODE,
     authorizedUsersCount: getAuthorizedUsers().length,
     allowAllUsers: allowAllUsers(),
+    streamElementsConfigured: hasStreamElementsToken(),
+    streamElementsDefaultChannel: getDefaultStreamElementsChannel(),
+    streamElementsTopic: 'channel.tips',
   });
 });
 
@@ -167,6 +205,14 @@ function numberValue(value) {
   return null;
 }
 
+function firstNumberValue(...values) {
+  for (const value of values) {
+    const number = numberValue(value);
+    if (number !== null) return number;
+  }
+  return null;
+}
+
 function firstPositiveNumber(...values) {
   for (const value of values) {
     const number = numberValue(value);
@@ -236,6 +282,218 @@ function firstImageUrl(...values) {
     if (url) return url;
   }
   return '';
+}
+
+function getStreamElementsAuth() {
+  const jwt = firstString(
+    process.env.STREAMELEMENTS_TOKEN,
+    process.env.STREAM_ELEMENTS_TOKEN,
+    process.env.STREAMELEMENTS_JWT,
+    process.env.STREAM_ELEMENTS_JWT
+  );
+  const apiKey = firstString(
+    process.env.STREAMELEMENTS_API_KEY,
+    process.env.STREAM_ELEMENTS_API_KEY,
+    process.env.STREAMELEMENTS_OVERLAY_TOKEN,
+    process.env.STREAM_ELEMENTS_OVERLAY_TOKEN
+  );
+  const oauth2 = firstString(
+    process.env.STREAMELEMENTS_OAUTH_TOKEN,
+    process.env.STREAM_ELEMENTS_OAUTH_TOKEN
+  );
+  const explicitType = firstString(
+    process.env.STREAMELEMENTS_TOKEN_TYPE,
+    process.env.STREAM_ELEMENTS_TOKEN_TYPE
+  ).toLowerCase();
+
+  const token = firstString(jwt, apiKey, oauth2);
+  if (!token) return null;
+
+  let tokenType = explicitType;
+  if (!tokenType) {
+    tokenType = jwt ? 'jwt' : apiKey ? 'apikey' : 'oauth2';
+  }
+  if (!['jwt', 'apikey', 'oauth2'].includes(tokenType)) tokenType = 'jwt';
+
+  return { token, tokenType };
+}
+
+function hasStreamElementsToken() {
+  return Boolean(getStreamElementsAuth());
+}
+
+function getStreamElementsRoom() {
+  return firstString(
+    process.env.STREAMELEMENTS_ROOM,
+    process.env.STREAM_ELEMENTS_ROOM,
+    process.env.STREAMELEMENTS_CHANNEL_ID,
+    process.env.STREAM_ELEMENTS_CHANNEL_ID
+  );
+}
+
+function getWebSocketCtor() {
+  if (typeof globalThis.WebSocket === 'function') return globalThis.WebSocket;
+  try {
+    return require('ws');
+  } catch (_) {
+    return null;
+  }
+}
+
+function addWebSocketListener(ws, eventName, handler) {
+  if (typeof ws.addEventListener === 'function') {
+    ws.addEventListener(eventName, (event) => {
+      handler(event && Object.prototype.hasOwnProperty.call(event, 'data') ? event.data : event, event);
+    });
+    return;
+  }
+
+  if (typeof ws.on === 'function') ws.on(eventName, handler);
+}
+
+function sendWebSocketJson(ws, payload) {
+  try {
+    if (!ws || ws.readyState !== 1) return false;
+    ws.send(JSON.stringify(payload));
+    return true;
+  } catch (err) {
+    console.error('Error enviando mensaje a StreamElements:', err.message || err);
+    return false;
+  }
+}
+
+function buildStreamElementsUrl(reconnectToken) {
+  if (!reconnectToken) return STREAM_ELEMENTS_WS_URL;
+  const separator = STREAM_ELEMENTS_WS_URL.includes('?') ? '&' : '?';
+  return `${STREAM_ELEMENTS_WS_URL}${separator}reconnect_token=${encodeURIComponent(reconnectToken)}`;
+}
+
+function parseStreamElementsMessage(raw) {
+  try {
+    if (Buffer.isBuffer(raw)) return JSON.parse(raw.toString('utf8'));
+    if (typeof raw === 'string') return JSON.parse(raw);
+    if (raw && typeof raw === 'object' && typeof raw.toString === 'function') {
+      return JSON.parse(raw.toString());
+    }
+  } catch (err) {
+    console.error('Mensaje StreamElements invalido:', err.message || err);
+  }
+  return null;
+}
+
+function moneyText(amount) {
+  const rounded = Math.round((amount + Number.EPSILON) * 100) / 100;
+  if (Number.isInteger(rounded)) return String(rounded);
+  return rounded.toFixed(2).replace(/0+$/g, '').replace(/\.$/g, '');
+}
+
+function formatDonationAmount(amountValue, currency, ...fallbacks) {
+  const fallback = firstString(...fallbacks);
+  const code = firstString(currency).toUpperCase();
+  const amount = numberValue(amountValue);
+  if (amount === null) return fallback || (code ? code : '');
+
+  const text = moneyText(amount);
+  if (code === 'USD' || code === 'MXN') return `$${text} ${code}`;
+  return code ? `${text} ${code}` : text;
+}
+
+function normalizeStreamElementsTip(rawMessage, configuredChannel) {
+  const tipData = firstObject(rawMessage.data, rawMessage.payload, rawMessage);
+  const donation = firstObject(tipData.donation, tipData.tip, tipData);
+  const donor = firstObject(donation.user, tipData.user, donation.donor, tipData.donor);
+  const amountValue = firstNumberValue(
+    donation.amount,
+    tipData.amount,
+    donation.amountValue,
+    tipData.amountValue
+  );
+  const currency = firstString(donation.currency, tipData.currency, 'USD').toUpperCase();
+  const amount = formatDonationAmount(
+    amountValue,
+    currency,
+    donation.amountText,
+    donation.formattedAmount,
+    tipData.amountText,
+    tipData.formattedAmount,
+    tipData.formatted_amount
+  );
+
+  if (!amount) return null;
+
+  const username = firstString(
+    donor.username,
+    donor.displayName,
+    donor.display_name,
+    donor.name,
+    donation.username,
+    donation.name,
+    tipData.username,
+    'Alguien'
+  );
+  const id = firstString(
+    tipData._id,
+    tipData.id,
+    rawMessage.id,
+    tipData.transactionId,
+    tipData.transaction_id,
+    donation.transactionId,
+    donation.transaction_id
+  );
+  const streamElementsRoom = firstString(tipData.channel, donation.channel, donor.channel, rawMessage.room);
+  const provider = firstString(tipData.provider, donation.provider, donation.paymentMethod, 'streamelements');
+
+  return {
+    id: id || `${streamElementsRoom}|${username}|${amount}|${firstString(tipData.createdAt, donation.createdAt)}`,
+    eventId: id || rawMessage.id || '',
+    source: 'streamelements',
+    provider,
+    paymentMethod: firstString(donation.paymentMethod, tipData.paymentMethod, provider),
+    status: firstString(tipData.status, donation.status),
+    approved: firstString(tipData.approved, donation.approved),
+    transactionId: firstString(tipData.transactionId, tipData.transaction_id, donation.transactionId, donation.transaction_id),
+    username,
+    nickname: username,
+    uniqueId: username,
+    displayName: username,
+    message: firstString(donation.message, tipData.message),
+    amount,
+    amountValue,
+    currency,
+    profilePictureUrl: firstImageUrl(
+      donor.profilePictureUrl,
+      donor.avatarUrl,
+      donor.avatar,
+      donor.picture,
+      donation.profilePictureUrl,
+      tipData.profilePictureUrl
+    ),
+    avatarUrl: firstImageUrl(donor.avatarUrl, donor.avatar, donor.picture),
+    streamElementsChannel: cleanStreamElementsChannel(configuredChannel),
+    streamElementsRoom,
+    createdAt: firstString(tipData.createdAt, donation.createdAt, rawMessage.ts),
+    updatedAt: firstString(tipData.updatedAt, donation.updatedAt),
+  };
+}
+
+function shouldRejectStreamElementsTip(payload) {
+  const status = String(payload.status || '').trim().toLowerCase();
+  const approved = String(payload.approved || '').trim().toLowerCase();
+
+  if (['failed', 'fail', 'cancelled', 'canceled', 'refunded', 'refund', 'chargeback', 'pending'].includes(status)) {
+    return true;
+  }
+  if (['denied', 'rejected', 'blocked', 'ignored'].includes(approved)) return true;
+  return false;
+}
+
+function streamElementsTipKey(payload) {
+  return firstString(
+    payload.id,
+    payload.eventId,
+    payload.transactionId,
+    `${payload.streamElementsRoom}|${payload.username}|${payload.amount}|${payload.message}|${payload.createdAt}`
+  );
 }
 
 function normalizePayload(type, rawData, options = {}) {
@@ -561,6 +819,14 @@ io.on('connection', (socket) => {
     noDataTimer: null,
     recentFinalGifts: new Map(),
     totals: newGiftTotals(),
+    streamElementsChannel: getDefaultStreamElementsChannel(),
+    streamElementsWs: null,
+    streamElementsRoom: '',
+    streamElementsReconnectTimer: null,
+    streamElementsRetryCount: 0,
+    streamElementsNonce: 0,
+    streamElementsFatalError: false,
+    recentStreamElementsTips: new Map(),
   };
 
   console.log('Nueva conexion desde la app');
@@ -655,6 +921,267 @@ io.on('connection', (socket) => {
     if (/share/i.test(socialType)) socket.emit('share', payload);
 
     console.log(`[${state.username}] social: ${summarize(payload)}`);
+  }
+
+  function streamElementsChannelForSocket() {
+    return state.streamElementsChannel || getDefaultStreamElementsChannel();
+  }
+
+  function emitStreamElementsStatus(payload) {
+    socket.emit('streamElementsStatus', {
+      channel: streamElementsChannelForSocket(),
+      room: state.streamElementsRoom,
+      ...payload,
+    });
+  }
+
+  function cleanupRecentStreamElementsTips() {
+    const now = Date.now();
+    for (const [key, at] of state.recentStreamElementsTips.entries()) {
+      if (now - at > STREAM_ELEMENTS_TIP_DEDUPE_MS) {
+        state.recentStreamElementsTips.delete(key);
+      }
+    }
+  }
+
+  function shouldSkipStreamElementsTip(payload) {
+    cleanupRecentStreamElementsTips();
+    const key = streamElementsTipKey(payload);
+    if (state.recentStreamElementsTips.has(key)) return true;
+    state.recentStreamElementsTips.set(key, Date.now());
+    return false;
+  }
+
+  function stopStreamElementsTips() {
+    if (state.streamElementsReconnectTimer) {
+      clearTimeout(state.streamElementsReconnectTimer);
+      state.streamElementsReconnectTimer = null;
+    }
+
+    const ws = state.streamElementsWs;
+    state.streamElementsWs = null;
+    if (!ws) return;
+
+    try {
+      if (typeof ws.removeAllListeners === 'function') ws.removeAllListeners();
+      if (ws.readyState === 0 && typeof ws.terminate === 'function') ws.terminate();
+      else if (typeof ws.close === 'function') ws.close();
+    } catch (err) {
+      console.error('Error cerrando StreamElements WS:', err.message || err);
+    }
+  }
+
+  function scheduleStreamElementsReconnect(reason, reconnectToken = '') {
+    if (!state.active || state.streamElementsFatalError) return;
+    if (state.streamElementsReconnectTimer) return;
+
+    state.streamElementsRetryCount += 1;
+    const delay = Math.min(
+      STREAM_ELEMENTS_RECONNECT_MAX_MS,
+      STREAM_ELEMENTS_RECONNECT_BASE_MS * state.streamElementsRetryCount
+    );
+
+    console.warn(`StreamElements reconectando en ${delay}ms: ${reason}`);
+    emitStreamElementsStatus({
+      ok: false,
+      status: 'reconnecting',
+      message: reason,
+      retryCount: state.streamElementsRetryCount,
+      retryInMs: delay,
+    });
+
+    state.streamElementsReconnectTimer = setTimeout(() => {
+      state.streamElementsReconnectTimer = null;
+      startStreamElementsTips(reconnectToken, false);
+    }, delay);
+  }
+
+  function subscribeStreamElementsTips(ws, reconnectToken) {
+    if (reconnectToken) return;
+
+    const auth = getStreamElementsAuth();
+    if (!auth) return;
+
+    const room = getStreamElementsRoom();
+    const request = {
+      type: 'subscribe',
+      nonce: `channel-tips-${Date.now()}-${++state.streamElementsNonce}`,
+      data: {
+        topic: 'channel.tips',
+        token: auth.token,
+        token_type: auth.tokenType,
+      },
+    };
+    if (room) request.data.room = room;
+
+    sendWebSocketJson(ws, request);
+  }
+
+  function handleStreamElementsMessage(ws, raw, reconnectToken) {
+    if (state.streamElementsWs !== ws) return;
+
+    const message = parseStreamElementsMessage(raw);
+    if (!message) return;
+    if (STREAM_ELEMENTS_DEBUG) {
+      console.log(`[${state.username || 'sin-live'}] StreamElements raw: ${summarize(message)}`);
+    }
+
+    if (message.type === 'welcome') {
+      subscribeStreamElementsTips(ws, reconnectToken);
+      return;
+    }
+
+    if (message.type === 'reconnect') {
+      const token = firstString(message.data && message.data.reconnect_token);
+      stopStreamElementsTips();
+      startStreamElementsTips(token, false);
+      return;
+    }
+
+    if (message.type === 'response') {
+      if (message.error) {
+        const detail = firstString(message.data && message.data.message, message.error);
+        console.error(`StreamElements subscribe error: ${message.error} ${detail}`);
+        emitStreamElementsStatus({
+          ok: false,
+          status: 'error',
+          error: message.error,
+          message: detail,
+        });
+
+        if (['err_unauthorized', 'err_bad_request', 'invalid_message_type'].includes(message.error)) {
+          state.streamElementsFatalError = true;
+          stopStreamElementsTips();
+        }
+        return;
+      }
+
+      state.streamElementsRoom = firstString(message.data && message.data.room, state.streamElementsRoom);
+      state.streamElementsRetryCount = 0;
+      emitStreamElementsStatus({
+        ok: true,
+        status: 'subscribed',
+        topic: firstString(message.data && message.data.topic, 'channel.tips'),
+      });
+      console.log(
+        `[${state.username || 'sin-live'}] StreamElements suscrito a channel.tips` +
+          `${state.streamElementsRoom ? ` room=${state.streamElementsRoom}` : ''}`
+      );
+      return;
+    }
+
+    if (message.type !== 'message' || firstString(message.topic, message.data && message.data.topic) !== 'channel.tips') {
+      return;
+    }
+
+    const payload = normalizeStreamElementsTip(message, streamElementsChannelForSocket());
+    if (!payload) return;
+
+    if (shouldRejectStreamElementsTip(payload)) {
+      console.log(`[${state.username || 'sin-live'}] tip StreamElements ignorado por estado: ${summarize(payload)}`);
+      return;
+    }
+
+    if (shouldSkipStreamElementsTip(payload)) {
+      console.log(`[${state.username || 'sin-live'}] tip StreamElements duplicado ignorado: ${summarize(payload)}`);
+      return;
+    }
+
+    socket.emit('streamelementsTip', payload);
+    console.log(`[${state.username || 'sin-live'}] streamelementsTip: ${summarize(payload)}`);
+  }
+
+  function startStreamElementsTips(reconnectToken = '', resetRetry = true) {
+    const channel = streamElementsChannelForSocket();
+    if (!state.active) return;
+
+    if (!channel) {
+      emitStreamElementsStatus({
+        ok: false,
+        status: 'missing_channel',
+        message: 'Configura el usuario o link de StreamElements en la app',
+      });
+      return;
+    }
+
+    const auth = getStreamElementsAuth();
+    if (!auth) {
+      state.streamElementsFatalError = true;
+      emitStreamElementsStatus({
+        ok: false,
+        status: 'missing_token',
+        message: 'Falta STREAMELEMENTS_TOKEN en el server',
+      });
+      return;
+    }
+
+    const WebSocketCtor = getWebSocketCtor();
+    if (!WebSocketCtor) {
+      state.streamElementsFatalError = true;
+      emitStreamElementsStatus({
+        ok: false,
+        status: 'missing_websocket',
+        message: 'Este Node no tiene WebSocket global ni dependencia ws',
+      });
+      return;
+    }
+
+    stopStreamElementsTips();
+    if (resetRetry) state.streamElementsRetryCount = 0;
+    state.streamElementsFatalError = false;
+    state.streamElementsRoom = '';
+
+    const url = buildStreamElementsUrl(reconnectToken);
+    let ws;
+    try {
+      ws = new WebSocketCtor(url);
+    } catch (err) {
+      console.error('Error creando StreamElements WS:', err.message || err);
+      scheduleStreamElementsReconnect(err.message || 'Error creando StreamElements WS', reconnectToken);
+      return;
+    }
+
+    state.streamElementsWs = ws;
+    emitStreamElementsStatus({
+      ok: true,
+      status: 'connecting',
+      topic: 'channel.tips',
+    });
+
+    addWebSocketListener(ws, 'open', () => {
+      if (state.streamElementsWs !== ws) return;
+      console.log(`[${state.username || 'sin-live'}] StreamElements WS conectado para ${channel}`);
+    });
+
+    addWebSocketListener(ws, 'message', (raw) => {
+      handleStreamElementsMessage(ws, raw, reconnectToken);
+    });
+
+    addWebSocketListener(ws, 'error', (err) => {
+      if (state.streamElementsWs !== ws) return;
+      const message = err && err.message ? err.message : 'StreamElements WS error';
+      console.error('StreamElements WS error:', message);
+      emitStreamElementsStatus({
+        ok: false,
+        status: 'error',
+        message,
+      });
+    });
+
+    addWebSocketListener(ws, 'close', (code, reasonOrEvent) => {
+      if (state.streamElementsWs !== ws) return;
+      state.streamElementsWs = null;
+
+      const reason = firstString(
+        reasonOrEvent && reasonOrEvent.reason,
+        Buffer.isBuffer(reasonOrEvent) ? reasonOrEvent.toString('utf8') : reasonOrEvent,
+        code && code.reason
+      );
+      const closeCode = typeof code === 'number' ? code : code && code.code;
+      const message = `StreamElements WS cerrado${closeCode ? ` (${closeCode})` : ''}${reason ? `: ${reason}` : ''}`;
+      console.warn(message);
+      scheduleStreamElementsReconnect(message);
+    });
   }
 
   function safeDisconnect() {
@@ -871,11 +1398,27 @@ io.on('connection', (socket) => {
       totals: publicGiftTotals(state.totals),
     });
     connectToTikTok(clean, sessionId);
+    startStreamElementsTips();
+  });
+
+  socket.on('setStreamElementsChannel', (input) => {
+    state.streamElementsChannel = cleanStreamElementsChannel(input);
+    state.streamElementsFatalError = false;
+    socket.emit('streamElementsChannel', {
+      ok: true,
+      channel: state.streamElementsChannel,
+      tipLink: state.streamElementsChannel
+        ? `https://streamelements.com/${state.streamElementsChannel}/tip`
+        : '',
+    });
+    console.log(`[${state.username || 'sin-live'}] StreamElements channel: ${state.streamElementsChannel || 'sin filtro'}`);
+    if (state.active) startStreamElementsTips();
   });
 
   socket.on('disconnect', () => {
     console.log('Desconexion de socket');
     state.active = false;
+    stopStreamElementsTips();
     safeDisconnect();
   });
 
