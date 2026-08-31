@@ -39,6 +39,7 @@ const diagnostics = {
   lastStreamElementsStatus: null,
   lastStreamElementsTip: null,
 };
+const recentGlobalStreamElementsTips = new Map();
 
 function cleanUsername(username) {
   return String(username || '')
@@ -1168,12 +1169,19 @@ io.on('connection', (socket) => {
         state.recentStreamElementsTips.delete(key);
       }
     }
+    for (const [key, at] of recentGlobalStreamElementsTips.entries()) {
+      if (now - at > STREAM_ELEMENTS_TIP_DEDUPE_MS) {
+        recentGlobalStreamElementsTips.delete(key);
+      }
+    }
   }
 
   function shouldSkipStreamElementsTip(payload) {
     cleanupRecentStreamElementsTips();
     const key = streamElementsTipKey(payload);
+    if (recentGlobalStreamElementsTips.has(key)) return true;
     if (state.recentStreamElementsTips.has(key)) return true;
+    recentGlobalStreamElementsTips.set(key, Date.now());
     state.recentStreamElementsTips.set(key, Date.now());
     return false;
   }
@@ -1316,10 +1324,11 @@ io.on('connection', (socket) => {
       return;
     }
 
-    socket.emit('streamelementsTip', payload);
+    io.emit('streamelementsTip', payload);
     diagnostics.lastStreamElementsTip = {
       at: new Date().toISOString(),
       debug: false,
+      emittedTo: diagnostics.connectedSockets,
       username: payload.username,
       amount: payload.amount,
       channel: payload.streamElementsChannel,
