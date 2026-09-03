@@ -22,7 +22,7 @@ function envBoolean(name, defaultValue = false) {
 
 // --- AJUSTES PARA AHORRAR LLAVES TIKTOOL ---
 const PORT = process.env.PORT || 8080;
-const MAX_RETRIES = envNumber('MAX_RETRIES', 3); // Bajamos de 10 a 3 para no quemar llaves si el usuario está offline
+const MAX_RETRIES = envNumber('MAX_RETRIES', 1); // Bajamos de 10 a 3 para no quemar llaves si el usuario está offline
 const RECONNECT_BASE_MS = envNumber('RECONNECT_BASE_MS', 15000); // Subimos de 3s a 15s (Damos tiempo a que el stream se estabilice)
 const RECONNECT_STEP_MS = envNumber('RECONNECT_STEP_MS', 5000);  // Incremento de espera entre fallos
 const NO_DATA_RECONNECT_MS = envNumber('NO_DATA_RECONNECT_MS', 0); // 0 = Desactivado (Evita reconectar si el chat está quieto)
