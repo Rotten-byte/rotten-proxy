@@ -20,11 +20,14 @@ function envBoolean(name, defaultValue = false) {
   return ['true', '1', 'yes', 'y', 'si', 'sí'].includes(String(value).trim().toLowerCase());
 }
 
+// --- AJUSTES PARA AHORRAR LLAVES TIKTOOL ---
 const PORT = process.env.PORT || 8080;
-const MAX_RETRIES = envNumber('MAX_RETRIES', 10);
-const RECONNECT_BASE_MS = envNumber('RECONNECT_BASE_MS', 3000);
-const RECONNECT_STEP_MS = envNumber('RECONNECT_STEP_MS', 1000);
-const NO_DATA_RECONNECT_MS = envNumber('NO_DATA_RECONNECT_MS', 0);
+const MAX_RETRIES = envNumber('MAX_RETRIES', 3); // Bajamos de 10 a 3 para no quemar llaves si el usuario está offline
+const RECONNECT_BASE_MS = envNumber('RECONNECT_BASE_MS', 15000); // Subimos de 3s a 15s (Damos tiempo a que el stream se estabilice)
+const RECONNECT_STEP_MS = envNumber('RECONNECT_STEP_MS', 5000);  // Incremento de espera entre fallos
+const NO_DATA_RECONNECT_MS = envNumber('NO_DATA_RECONNECT_MS', 0); // 0 = Desactivado (Evita reconectar si el chat está quieto)
+// ------------------------------------------
+
 const GIFT_DEDUPE_MS = envNumber('GIFT_DEDUPE_MS', 4000);
 const EMIT_GIFT_PROGRESS = envBoolean('EMIT_GIFT_PROGRESS', false);
 const STREAM_ELEMENTS_WS_URL = process.env.STREAMELEMENTS_WS_URL || 'wss://astro.streamelements.com/';
@@ -274,8 +277,7 @@ function getApiKey() {
     process.env.TIKTOOL_API_KEY15,
     process.env.TIKTOOL_API_KEY16,
     process.env.TIKTOOL_API_KEY17,
-    process.env.TIKTOOL_API_KEY18,
-    
+    process.env.TIKTOOL_API_KEY18
   ].filter((key) => key && key.trim().length > 10);
 
   return keys.length === 0 ? null : keys[Math.floor(Math.random() * keys.length)].trim();
@@ -1810,7 +1812,7 @@ io.on('connection', (socket) => {
 
     if (state.retryCount >= MAX_RETRIES) {
       console.error(`Maximo de reintentos alcanzado para @${clean}`);
-      socket.emit('error', 'Max retries exceeded');
+      socket.emit('error', 'Max retries exceeded (3)');
       state.active = false;
       return;
     }
@@ -1890,7 +1892,10 @@ io.on('connection', (socket) => {
       ['disconnected', 'close', 'streamEnd'].forEach((eventName) => {
         conn.on(eventName, () => {
           console.log(`Evento ${eventName} en @${clean}`);
-          scheduleReconnect(clean, sessionId, 'TikTok Connection Lost - Retrying');
+          // Añadimos una pequeña guarda para no reconectar instantáneamente en micro-cortes
+          if (state.active) {
+            scheduleReconnect(clean, sessionId, 'TikTok Connection Lost - Waiting 15s');
+          }
         });
       });
 
