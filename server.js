@@ -270,6 +270,10 @@ function getApiKey() {
     process.env.TIKTOOL_API_KEY11,
     process.env.TIKTOOL_API_KEY12,
     process.env.TIKTOOL_API_KEY13,
+    process.env.TIKTOOL_API_KEY14,
+    process.env.TIKTOOL_API_KEY15,
+    process.env.TIKTOOL_API_KEY16,
+    process.env.TIKTOOL_API_KEY17,
   ].filter((key) => key && key.trim().length > 10);
 
   return keys.length === 0 ? null : keys[Math.floor(Math.random() * keys.length)].trim();
