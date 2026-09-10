@@ -279,6 +279,7 @@ function getApiKey() {
     process.env.TIKTOOL_API_KEY17,
     process.env.TIKTOOL_API_KEY18,
     process.env.TIKTOOL_API_KEY19,
+    process.env.TIKTOOL_API_KEY20,
     
   ].filter((key) => key && key.trim().length > 10);
 
