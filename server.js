@@ -1833,11 +1833,11 @@ io.on('connection', (socket) => {
       const conn = new TikTokLive({
         uniqueId: clean,
         apiKey,
-        mode: 'relayed',
       });
 
       state.conn = conn;
       let hasReceivedData = false;
+
 
       function markData() {
         hasReceivedData = true;
