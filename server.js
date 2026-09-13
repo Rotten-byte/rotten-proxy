@@ -22,12 +22,11 @@ function envBoolean(name, defaultValue = false) {
 
 // --- AJUSTES PARA AHORRAR LLAVES TIKTOOL ---
 const PORT = process.env.PORT || 8080;
-const MAX_RETRIES = envNumber('MAX_RETRIES', 1); // Bajamos de 10 a 3 para no quemar llaves si el usuario está offline
-const RECONNECT_BASE_MS = envNumber('RECONNECT_BASE_MS', 15000); // Subimos de 3s a 15s (Damos tiempo a que el stream se estabilice)
-const RECONNECT_STEP_MS = envNumber('RECONNECT_STEP_MS', 5000);  // Incremento de espera entre fallos
-const NO_DATA_RECONNECT_MS = envNumber('NO_DATA_RECONNECT_MS', 0); // 0 = Desactivado (Evita reconectar si el chat está quieto)
+const MAX_RETRIES = envNumber('MAX_RETRIES', 1);
+const RECONNECT_BASE_MS = envNumber('RECONNECT_BASE_MS', 15000);
+const RECONNECT_STEP_MS = envNumber('RECONNECT_STEP_MS', 5000);
+const NO_DATA_RECONNECT_MS = envNumber('NO_DATA_RECONNECT_MS', 0);
 // ------------------------------------------
-
 const GIFT_DEDUPE_MS = envNumber('GIFT_DEDUPE_MS', 4000);
 const EMIT_GIFT_PROGRESS = envBoolean('EMIT_GIFT_PROGRESS', false);
 const STREAM_ELEMENTS_WS_URL = process.env.STREAMELEMENTS_WS_URL || 'wss://astro.streamelements.com/';
@@ -48,6 +47,7 @@ const diagnostics = {
   lastStreamElementsIgnoredTip: null,
   lastStreamElementsTip: null,
 };
+
 const recentGlobalStreamElementsTips = new Map();
 
 function cleanUsername(username) {
@@ -62,16 +62,13 @@ function cleanUsername(username) {
 function cleanStreamElementsChannel(input) {
   let value = String(input || '').trim();
   if (!value) return '';
-
   value = value.split('#')[0].split('?')[0].trim().replace(/^@/, '');
   const marker = 'streamelements.com/';
   const markerIndex = value.toLowerCase().indexOf(marker);
   if (markerIndex >= 0) value = value.slice(markerIndex + marker.length);
-
   value = value.replace(/^\/+|\/+$/g, '');
   if (value.includes('/')) value = value.split('/')[0];
   value = value.replace(/^@/, '').trim().toLowerCase();
-
   if (value === 'tip' || value === 'dashboard') return '';
   return value.replace(/[^a-z0-9_.-]/g, '');
 }
@@ -79,10 +76,10 @@ function cleanStreamElementsChannel(input) {
 function getDefaultStreamElementsChannel() {
   return cleanStreamElementsChannel(
     process.env.STREAMELEMENTS_CHANNEL ||
-      process.env.STREAM_ELEMENTS_CHANNEL ||
-      process.env.STREAMELEMENTS_USERNAME ||
-      process.env.STREAM_ELEMENTS_USERNAME ||
-      ''
+    process.env.STREAM_ELEMENTS_CHANNEL ||
+    process.env.STREAMELEMENTS_USERNAME ||
+    process.env.STREAM_ELEMENTS_USERNAME ||
+    ''
   );
 }
 
@@ -100,13 +97,11 @@ function allowAllUsers() {
 function isAuthorized(username) {
   const clean = cleanUsername(username);
   if (allowAllUsers()) return true;
-
   const users = getAuthorizedUsers();
   if (users.length === 0) {
     console.warn('No hay AUTHORIZED_USERS configurado. Usa AUTHORIZED_USERS=usuario1,usuario2 o ALLOW_ALL_USERS=true');
     return false;
   }
-
   return users.includes(clean);
 }
 
@@ -162,12 +157,10 @@ app.get('/health', (_req, res) => {
 app.get('/debug/paypal-test', (req, res) => {
   const secret = firstString(process.env.PAYPAL_TEST_SECRET, process.env.DEBUG_SECRET);
   const requestedSecret = firstString(req.query.secret);
-
   if (secret && requestedSecret !== secret) {
     res.status(401).json({ ok: false, message: 'PAYPAL_TEST_SECRET incorrecto' });
     return;
   }
-
   if (!secret && !envBoolean('ENABLE_PAYPAL_TEST_ENDPOINT', false)) {
     res.status(403).json({
       ok: false,
@@ -175,7 +168,6 @@ app.get('/debug/paypal-test', (req, res) => {
     });
     return;
   }
-
   const channel = cleanStreamElementsChannel(req.query.channel || getDefaultStreamElementsChannel());
   const rawAmount = firstString(req.query.amount, '$5 USD');
   const currency = firstString(req.query.currency, 'USD').toUpperCase();
@@ -184,7 +176,6 @@ app.get('/debug/paypal-test', (req, res) => {
   const username = firstString(req.query.username, 'PruebaPayPal');
   const message = firstString(req.query.message, 'Prueba de alerta desde el server');
   const id = `debug-${Date.now()}`;
-
   const payload = {
     id,
     eventId: id,
@@ -210,7 +201,6 @@ app.get('/debug/paypal-test', (req, res) => {
     streamElementsRoom: 'debug',
     createdAt: new Date().toISOString(),
   };
-
   diagnostics.lastStreamElementsTip = {
     at: new Date().toISOString(),
     debug: true,
@@ -222,7 +212,6 @@ app.get('/debug/paypal-test', (req, res) => {
     channel: payload.streamElementsChannel,
     topic: 'debug',
   };
-
   io.emit('streamelementsTip', payload);
   res.status(200).json({
     ok: true,
@@ -280,9 +269,7 @@ function getApiKey() {
     process.env.TIKTOOL_API_KEY18,
     process.env.TIKTOOL_API_KEY19,
     process.env.TIKTOOL_API_KEY20,
-    
   ].filter((key) => key && key.trim().length > 10);
-
   return keys.length === 0 ? null : keys[Math.floor(Math.random() * keys.length)].trim();
 }
 
@@ -315,11 +302,9 @@ function textValue(value) {
     const text = String(value || '').trim();
     return text && text !== 'null' && text !== 'undefined' ? text : '';
   }
-
   if (value && typeof value === 'object' && !Array.isArray(value)) {
     return firstString(value.message, value.text, value.body, value.content, value.value, value.note, value.comment);
   }
-
   return '';
 }
 
@@ -371,7 +356,6 @@ function booleanValue(value) {
   if (typeof value === 'number') return value !== 0;
   if (typeof value === 'bigint') return value !== 0n;
   if (typeof value !== 'string') return null;
-
   const text = value.trim().toLowerCase();
   if (['true', '1', 'yes', 'y', 'si', 'sí'].includes(text)) return true;
   if (['false', '0', 'no', 'n'].includes(text)) return false;
@@ -435,20 +419,16 @@ function tokenConfigFromValue(value, source, fallbackTokenType = 'jwt') {
     const token = value.trim();
     return token ? { token, tokenType: normalizeStreamElementsTokenType(fallbackTokenType), room: '', source } : null;
   }
-
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-
   const jwt = firstString(value.token, value.jwt, value.JWT);
   const apiKey = firstString(value.apiKey, value.apikey, value.api_key, value.overlayToken, value.overlay_token);
   const oauth2 = firstString(value.oauth2, value.oauthToken, value.oauth_token, value.accessToken, value.access_token);
   const token = firstString(jwt, apiKey, oauth2);
   if (!token) return null;
-
   const explicitType = firstString(value.tokenType, value.token_type, value.type);
   const tokenType = normalizeStreamElementsTokenType(
     explicitType || (apiKey ? 'apikey' : oauth2 ? 'oauth2' : 'jwt')
   );
-
   return {
     token,
     tokenType,
@@ -461,7 +441,6 @@ function getStreamElementsTokensJson() {
   const raw = firstString(process.env.STREAMELEMENTS_TOKENS_JSON, process.env.STREAM_ELEMENTS_TOKENS_JSON);
   const map = new Map();
   if (!raw) return map;
-
   try {
     const parsed = JSON.parse(raw);
     const addEntry = (channelInput, config) => {
@@ -469,7 +448,6 @@ function getStreamElementsTokensJson() {
       const tokenConfig = tokenConfigFromValue(config, 'tokens_json');
       if (channel && tokenConfig) map.set(channel, tokenConfig);
     };
-
     if (Array.isArray(parsed)) {
       parsed.forEach((item) => {
         const channel = firstString(
@@ -489,14 +467,12 @@ function getStreamElementsTokensJson() {
   } catch (err) {
     console.error('STREAMELEMENTS_TOKENS_JSON invalido:', err.message || err);
   }
-
   return map;
 }
 
 function getStreamElementsChannelEnvAuth(channel) {
   const suffix = streamElementsEnvSuffix(channel);
   if (!suffix) return null;
-
   const jwt = firstString(
     process.env[`STREAMELEMENTS_TOKEN_${suffix}`],
     process.env[`STREAM_ELEMENTS_TOKEN_${suffix}`],
@@ -515,7 +491,6 @@ function getStreamElementsChannelEnvAuth(channel) {
   );
   const token = firstString(jwt, apiKey, oauth2);
   if (!token) return null;
-
   return {
     token,
     tokenType: normalizeStreamElementsTokenType(
@@ -553,12 +528,11 @@ function getGlobalStreamElementsAuth() {
   );
   const token = firstString(jwt, apiKey, oauth2);
   if (!token) return null;
-
   return {
     token,
     tokenType: normalizeStreamElementsTokenType(
       firstString(process.env.STREAMELEMENTS_TOKEN_TYPE, process.env.STREAM_ELEMENTS_TOKEN_TYPE) ||
-        (apiKey ? 'apikey' : oauth2 ? 'oauth2' : 'jwt')
+      (apiKey ? 'apikey' : oauth2 ? 'oauth2' : 'jwt')
     ),
     room: getGlobalStreamElementsRoom(),
     source: 'global_env',
@@ -570,23 +544,19 @@ function getStreamElementsAuth(channelInput = '') {
   if (channel) {
     const mappedAuth = getStreamElementsTokensJson().get(channel);
     if (mappedAuth) return mappedAuth;
-
     const envAuth = getStreamElementsChannelEnvAuth(channel);
     if (envAuth) return envAuth;
   }
-
   return getGlobalStreamElementsAuth();
 }
 
 function getConfiguredStreamElementsChannels() {
   const channels = new Set(getStreamElementsTokensJson().keys());
-
   Object.keys(process.env).forEach((key) => {
     if (/TOKEN_TYPE|ROOM|CHANNEL_ID/.test(key)) return;
     const match = key.match(/^STREAM_?ELEMENTS_(?:TOKEN|JWT|API_KEY|OVERLAY_TOKEN|OAUTH_TOKEN)_([A-Z0-9_]+)$/);
     if (match && match[1]) channels.add(match[1].toLowerCase());
   });
-
   return Array.from(channels).sort();
 }
 
@@ -629,7 +599,6 @@ function addWebSocketListener(ws, eventName, handler) {
     ws.on(eventName, handler);
     return;
   }
-
   if (typeof ws.addEventListener === 'function') {
     ws.addEventListener(eventName, (event) => {
       handler(event && Object.prototype.hasOwnProperty.call(event, 'data') ? event.data : event, event);
@@ -679,7 +648,6 @@ function formatDonationAmount(amountValue, currency, ...fallbacks) {
   const code = firstString(currency).toUpperCase();
   const amount = numberValue(amountValue);
   if (amount === null) return fallback || '';
-
   const text = moneyText(amount);
   if (code === 'USD' || code === 'MXN') return `$${text} ${code}`;
   return code ? `${text} ${code}` : text;
@@ -793,9 +761,7 @@ function normalizeStreamElementsTip(rawMessage, configuredChannel) {
     tipAmount.formatted_amount
   );
   const appAmount = amountValue !== null ? amountValue : numberValue(amountText);
-
   if (appAmount === null && !amountText) return null;
-
   const username = firstString(
     donor.username,
     donor.displayName,
@@ -845,7 +811,6 @@ function normalizeStreamElementsTip(rawMessage, configuredChannel) {
     tipData.msg,
     tipData.description
   );
-
   return {
     id: id || `${streamElementsRoom}|${username}|${amountText}|${message}|${firstString(tipData.createdAt, donation.createdAt)}`,
     eventId: id || rawMessage.id || '',
@@ -890,7 +855,6 @@ function normalizeStreamElementsTip(rawMessage, configuredChannel) {
 function shouldRejectStreamElementsTip(payload) {
   const status = String(payload.status || '').trim().toLowerCase();
   const approved = String(payload.approved || '').trim().toLowerCase();
-
   if (['failed', 'fail', 'cancelled', 'canceled', 'refunded', 'refund', 'chargeback', 'pending'].includes(status)) {
     return true;
   }
@@ -1162,6 +1126,7 @@ function normalizePayload(type, rawData, options = {}) {
     data.total_coins = totalDiamonds;
     data.eventDiamonds = totalDiamonds;
     data.event_diamonds = totalDiamonds;
+
     data.giftPictureUrl = firstImageUrl(
       data.giftPictureUrl,
       data.giftImage,
@@ -1223,7 +1188,6 @@ function giftIdentity(payload) {
 
 io.on('connection', (socket) => {
   diagnostics.connectedSockets += 1;
-
   const state = {
     conn: null,
     username: null,
@@ -1261,7 +1225,6 @@ io.on('connection', (socket) => {
     const identity = giftIdentity(payload);
     const seen = state.recentFinalGifts.get(identity.key);
     if (!seen) return false;
-
     if (identity.strong) return true;
     return seen.source !== payload.eventSource;
   }
@@ -1356,7 +1319,6 @@ io.on('connection', (socket) => {
       room: state.streamElementsRoom,
       ...payload,
     };
-
     diagnostics.lastStreamElementsStatus = status;
     socket.emit('streamElementsStatus', status);
   }
@@ -1390,11 +1352,9 @@ io.on('connection', (socket) => {
       clearTimeout(state.streamElementsReconnectTimer);
       state.streamElementsReconnectTimer = null;
     }
-
     const ws = state.streamElementsWs;
     state.streamElementsWs = null;
     if (!ws) return;
-
     try {
       if (typeof ws.removeAllListeners === 'function') ws.removeAllListeners();
       if (ws.readyState === 0 && typeof ws.terminate === 'function') ws.terminate();
@@ -1407,13 +1367,11 @@ io.on('connection', (socket) => {
   function scheduleStreamElementsReconnect(reason, reconnectToken = '') {
     if (!state.active || state.streamElementsFatalError) return;
     if (state.streamElementsReconnectTimer) return;
-
     state.streamElementsRetryCount += 1;
     const delay = Math.min(
       STREAM_ELEMENTS_RECONNECT_MAX_MS,
       STREAM_ELEMENTS_RECONNECT_BASE_MS * state.streamElementsRetryCount
     );
-
     console.warn(`StreamElements reconectando en ${delay}ms: ${reason}`);
     emitStreamElementsStatus({
       ok: false,
@@ -1422,7 +1380,6 @@ io.on('connection', (socket) => {
       retryCount: state.streamElementsRetryCount,
       retryInMs: delay,
     });
-
     state.streamElementsReconnectTimer = setTimeout(() => {
       state.streamElementsReconnectTimer = null;
       startStreamElementsTips(reconnectToken, false);
@@ -1431,15 +1388,12 @@ io.on('connection', (socket) => {
 
   function subscribeStreamElementsTips(ws, reconnectToken) {
     if (reconnectToken) return;
-
     const channel = streamElementsChannelForSocket();
     const auth = getStreamElementsAuth(channel);
     if (!auth) return;
-
     const room = getStreamElementsRoom(channel);
     STREAM_ELEMENTS_TOPICS.forEach((topic) => {
       if (state.streamElementsSubscribeSentTopics.has(topic)) return;
-
       const nonce = `${topic.replace(/[^a-z0-9]+/gi, '-')}-${Date.now()}-${++state.streamElementsNonce}`;
       const request = {
         type: 'subscribe',
@@ -1451,7 +1405,6 @@ io.on('connection', (socket) => {
         },
       };
       if (room) request.data.room = room;
-
       if (sendWebSocketJson(ws, request)) {
         state.streamElementsSubscribeSentTopics.add(topic);
         state.streamElementsSubscribeTopicByNonce.set(nonce, topic);
@@ -1468,7 +1421,6 @@ io.on('connection', (socket) => {
 
   function handleStreamElementsMessage(ws, raw, reconnectToken) {
     if (state.streamElementsWs !== ws) return;
-
     const message = parseStreamElementsMessage(raw);
     if (!message) return;
     diagnostics.lastStreamElementsMessage = {
@@ -1483,26 +1435,22 @@ io.on('connection', (socket) => {
     if (STREAM_ELEMENTS_DEBUG) {
       console.log(`[${state.username || 'sin-live'}] StreamElements raw: ${summarize(message)}`);
     }
-
     if (message.type === 'welcome') {
       subscribeStreamElementsTips(ws, reconnectToken);
       return;
     }
-
     if (message.type === 'reconnect') {
       const token = firstString(message.data && message.data.reconnect_token);
       stopStreamElementsTips();
       startStreamElementsTips(token, false);
       return;
     }
-
     if (message.type === 'response') {
       const responseTopic = firstString(
         message.data && message.data.topic,
         state.streamElementsSubscribeTopicByNonce.get(firstString(message.nonce)),
         'channel.tips'
       );
-
       if (message.error) {
         const detail = firstString(message.data && message.data.message, message.error);
         console.error(`StreamElements subscribe error (${responseTopic}): ${message.error} ${detail}`);
@@ -1514,14 +1462,12 @@ io.on('connection', (socket) => {
           message: detail,
           subscribedTopics: Array.from(state.streamElementsSubscribedTopics),
         });
-
         if (responseTopic === 'channel.tips' && ['err_unauthorized', 'err_bad_request', 'invalid_message_type'].includes(message.error)) {
           state.streamElementsFatalError = true;
           stopStreamElementsTips();
         }
         return;
       }
-
       state.streamElementsRoom = firstString(message.data && message.data.room, state.streamElementsRoom);
       state.streamElementsRetryCount = 0;
       state.streamElementsSubscribedTopics.add(responseTopic);
@@ -1535,24 +1481,20 @@ io.on('connection', (socket) => {
       });
       console.log(
         `[${state.username || 'sin-live'}] StreamElements suscrito a ${responseTopic}` +
-          `${state.streamElementsRoom ? ` room=${state.streamElementsRoom}` : ''}`
+        `${state.streamElementsRoom ? ` room=${state.streamElementsRoom}` : ''}`
       );
       return;
     }
-
     const topic = firstString(message.topic, message.data && message.data.topic);
     if (message.type !== 'message' || !STREAM_ELEMENTS_TOPICS.includes(topic)) {
       return;
     }
-
     if (topic === 'channel.activities') {
       const activityType = firstString(message.data && message.data.type, message.data && message.data.data && message.data.data.type).toLowerCase();
       if (activityType && activityType !== 'tip') return;
     }
-
     const payload = normalizeStreamElementsTip(message, streamElementsChannelForSocket());
     if (!payload) return;
-
     if (shouldRejectStreamElementsTip(payload)) {
       diagnostics.lastStreamElementsIgnoredTip = {
         at: new Date().toISOString(),
@@ -1570,7 +1512,6 @@ io.on('connection', (socket) => {
       console.log(`[${state.username || 'sin-live'}] tip StreamElements ignorado por estado: ${summarize(payload)}`);
       return;
     }
-
     if (shouldSkipStreamElementsTip(payload)) {
       diagnostics.lastStreamElementsIgnoredTip = {
         at: new Date().toISOString(),
@@ -1588,7 +1529,6 @@ io.on('connection', (socket) => {
       console.log(`[${state.username || 'sin-live'}] tip StreamElements duplicado ignorado: ${summarize(payload)}`);
       return;
     }
-
     io.emit('streamelementsTip', payload);
     diagnostics.lastStreamElementsTip = {
       at: new Date().toISOString(),
@@ -1610,7 +1550,6 @@ io.on('connection', (socket) => {
   function startStreamElementsTips(reconnectToken = '', resetRetry = true) {
     const channel = streamElementsChannelForSocket();
     if (!state.active) return;
-
     if (!channel) {
       emitStreamElementsStatus({
         ok: false,
@@ -1619,7 +1558,6 @@ io.on('connection', (socket) => {
       });
       return;
     }
-
     const auth = getStreamElementsAuth(channel);
     if (!auth) {
       state.streamElementsFatalError = true;
@@ -1631,7 +1569,6 @@ io.on('connection', (socket) => {
       });
       return;
     }
-
     const webSocketRuntime = getWebSocketRuntime();
     if (!webSocketRuntime) {
       state.streamElementsFatalError = true;
@@ -1642,7 +1579,6 @@ io.on('connection', (socket) => {
       });
       return;
     }
-
     stopStreamElementsTips();
     if (resetRetry) state.streamElementsRetryCount = 0;
     state.streamElementsFatalError = false;
@@ -1650,7 +1586,6 @@ io.on('connection', (socket) => {
     state.streamElementsSubscribeSentTopics.clear();
     state.streamElementsSubscribedTopics.clear();
     state.streamElementsSubscribeTopicByNonce.clear();
-
     const url = buildStreamElementsUrl(reconnectToken);
     let ws;
     try {
@@ -1660,7 +1595,6 @@ io.on('connection', (socket) => {
       scheduleStreamElementsReconnect(err.message || 'Error creando StreamElements WS', reconnectToken);
       return;
     }
-
     state.streamElementsWs = ws;
     emitStreamElementsStatus({
       ok: true,
@@ -1669,17 +1603,14 @@ io.on('connection', (socket) => {
       tokenSource: auth.source,
       webSocketRuntime: webSocketRuntime.name,
     });
-
     addWebSocketListener(ws, 'open', () => {
       if (state.streamElementsWs !== ws) return;
       console.log(`[${state.username || 'sin-live'}] StreamElements WS conectado para ${channel}`);
       subscribeStreamElementsTips(ws, reconnectToken);
     });
-
     addWebSocketListener(ws, 'message', (raw) => {
       handleStreamElementsMessage(ws, raw, reconnectToken);
     });
-
     addWebSocketListener(ws, 'error', (err) => {
       if (state.streamElementsWs !== ws) return;
       const message = err && err.message ? err.message : 'StreamElements WS error';
@@ -1694,7 +1625,6 @@ io.on('connection', (socket) => {
         message,
       });
     });
-
     if (typeof ws.on === 'function') {
       ws.on('unexpected-response', (_request, response) => {
         if (state.streamElementsWs !== ws) return;
@@ -1713,11 +1643,9 @@ io.on('connection', (socket) => {
         });
       });
     }
-
     addWebSocketListener(ws, 'close', (code, reasonOrEvent) => {
       if (state.streamElementsWs !== ws) return;
       state.streamElementsWs = null;
-
       const reason = firstString(
         reasonOrEvent && reasonOrEvent.reason,
         Buffer.isBuffer(reasonOrEvent) ? reasonOrEvent.toString('utf8') : reasonOrEvent,
@@ -1744,18 +1672,15 @@ io.on('connection', (socket) => {
       clearTimeout(state.noDataTimer);
       state.noDataTimer = null;
     }
-
     const conn = state.conn;
     state.conn = null;
     state.recentFinalGifts.clear();
     if (!conn) return;
-
     try {
       conn.removeAllListeners();
     } catch (err) {
       console.error('Error removiendo listeners:', err.message || err);
     }
-
     try {
       const ws = conn.ws || (conn.connection && conn.connection.ws) || conn.webSocket || null;
       if (ws && typeof ws.on === 'function') {
@@ -1763,18 +1688,15 @@ io.on('connection', (socket) => {
         ws.on('error', () => {});
       }
     } catch (_) {}
-
     setTimeout(() => {
       try {
         const ws = conn.ws || (conn.connection && conn.connection.ws) || conn.webSocket || null;
         const readyState = ws ? ws.readyState : undefined;
-
         if (ws && readyState === 0) {
           if (typeof ws.terminate === 'function') ws.terminate();
           else if (typeof ws.close === 'function') ws.close();
           return;
         }
-
         if (typeof conn.disconnect === 'function') conn.disconnect();
       } catch (err) {
         console.error('Error desconectando (ignorado):', err.message || err);
@@ -1785,16 +1707,13 @@ io.on('connection', (socket) => {
   function scheduleReconnect(username, sessionId, reason) {
     if (!state.active || state.retryCount >= MAX_RETRIES) return;
     if (state.reconnectTimer) return;
-
     if (!isAuthorized(username)) {
       state.active = false;
       emitUnauthorized(socket, username);
       return;
     }
-
     state.retryCount += 1;
     const delay = RECONNECT_BASE_MS + state.retryCount * RECONNECT_STEP_MS;
-
     console.log(`Reconectando @${username} (${state.retryCount}/${MAX_RETRIES}): ${reason}`);
     socket.emit('error', reason);
     state.reconnectTimer = setTimeout(() => {
@@ -1806,34 +1725,28 @@ io.on('connection', (socket) => {
   function connectToTikTok(username, sessionId) {
     if (!state.active) return;
     const clean = cleanUsername(username);
-
     if (!isAuthorized(clean)) {
       state.active = false;
       emitUnauthorized(socket, clean);
       return;
     }
-
     if (state.retryCount >= MAX_RETRIES) {
       console.error(`Maximo de reintentos alcanzado para @${clean}`);
       socket.emit('error', 'Max retries exceeded (3)');
       state.active = false;
       return;
     }
-
     safeDisconnect();
-
     const apiKey = getApiKey();
     if (!apiKey) {
       socket.emit('error', 'No API Key en Railway');
       state.active = false;
       return;
     }
-
     try {
       const conn = new TikTokLive({
         uniqueId: clean,
         apiKey,
-        mode: 'relayed',
       });
 
       state.conn = conn;
@@ -1895,7 +1808,6 @@ io.on('connection', (socket) => {
       ['disconnected', 'close', 'streamEnd'].forEach((eventName) => {
         conn.on(eventName, () => {
           console.log(`Evento ${eventName} en @${clean}`);
-          // Añadimos una pequeña guarda para no reconectar instantáneamente en micro-cortes
           if (state.active) {
             scheduleReconnect(clean, sessionId, 'TikTok Connection Lost - Waiting 15s');
           }
@@ -1935,12 +1847,10 @@ io.on('connection', (socket) => {
   socket.on('join', (username, sessionId) => {
     const clean = cleanUsername(username);
     console.log(`Intento de conexion de: @${clean}`);
-
     if (!isAuthorized(clean)) {
       emitUnauthorized(socket, clean);
       return;
     }
-
     console.log(`Usuario autorizado: @${clean}`);
     state.active = true;
     state.username = clean;
