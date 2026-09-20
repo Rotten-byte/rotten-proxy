@@ -1284,10 +1284,8 @@ io.on('connection', (socket) => {
     console.log(`[${state.username}] gift/${source}: ${summarize(payload)}`);
   }
 
-  function emitSocial(rawData) {
+  function socialEventType(rawData, fallback = '') {
     const payload = normalizePayload('social', rawData);
-    socket.emit('social', payload);
-
     const socialType = [
       payload.displayType,
       payload.type,
@@ -1295,11 +1293,18 @@ io.on('connection', (socket) => {
       payload.eventName,
       payload.action,
     ].join(' ');
+    // Un repost puede traer varias etiquetas. Solo debe producir una alerta.
+    if (/repost|republish|reshare/i.test(socialType)) return 'repost';
+    if (/share|shared|compart/i.test(socialType)) return 'share';
+    if (/follow|follower|seguir/i.test(socialType)) return 'follow';
+    return fallback;
+  }
 
-    if (/repost/i.test(socialType)) socket.emit('repost', payload);
-    if (/follow/i.test(socialType)) socket.emit('follow', payload);
-    if (/share/i.test(socialType)) socket.emit('share', payload);
-
+  function emitSocial(rawData) {
+    const payload = normalizePayload('social', rawData);
+    socket.emit('social', payload);
+    const type = socialEventType(rawData);
+    if (type) socket.emit(type, payload);
     console.log(`[${state.username}] social: ${summarize(payload)}`);
   }
 
@@ -1782,11 +1787,11 @@ io.on('connection', (socket) => {
       });
       conn.on('follow', (data) => {
         markData();
-        emitEvent('follow', data);
+        emitEvent(socialEventType(data, 'follow'), data);
       });
       conn.on('share', (data) => {
         markData();
-        emitEvent('share', data);
+        emitEvent(socialEventType(data, 'share'), data);
       });
       conn.on('social', (data) => {
         markData();
